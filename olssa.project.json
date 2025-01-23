@@ -1,0 +1,12 @@
+{
+    "name": "OLSSA by Indirecta",
+    "globIgnorePaths": ["**/*.spec.lua"],
+    "tree": {
+      "$className": "DataModel",
+  
+      "ServerScriptService": {
+        "$className": "ServerScriptService",
+        "$path": "src"
+      }
+    }
+  }
