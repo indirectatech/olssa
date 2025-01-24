@@ -27,7 +27,6 @@ do
 		["REVISION"] = "rewrite"; -- OLSSA Snippet Revision
 
 		-- § Verbose Logging, Filters & Debug
-		["LO"]
 		["VERBOSE"] = true; -- Whether or not to log all spoof actions, requests, script activity
 		["EXTRA_VERBOSE"] = false; -- Experimental, logs activity such as indexes from metamethods
 		["LOG_WHITELIST"] = nil; -- Set this to a string with a valid lua pattern that will match your desired logs. When the pattern matches it will
