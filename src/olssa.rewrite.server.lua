@@ -33,34 +33,15 @@ do
 	local __env = _getfenv()
 	local __globals = {}
 
-	local function _env_write(k,v)
-		--  !NOTE: If someone were to iterate through __env, they would be able to find extra spoofed globals
-		__globals[k] = _rawget(__env, k);
-		return _rawset(__env, v);
-	end;
-
-	-- write env spoofing function
-	-- saves to a backup "old" table the original globals
-	-- overwrites __env global
-
-	local __script = script;
-	local __game = game;
-	local __workspace = workspace;
-
-	local __type = type;
-	local __typeof = typeof;
-
+	-- § Configuration
 	local __config = {
-		-- What is a hook? A hook is when OLSSA redefines a global variable to modify specific behaviors
-		-- What is a spoof? A spoof is when OLSSA uses a hook to return a different value from the original
-
 		["meta"] = {
 			["revision"] = "rewrite";
 			["date"] = "23/01/2025"; -- dd/mm/yyyy
 		};
 
 		["logs"] = {
-			["verbose"] = 3; -- 0: Mute < 1: Script Activity & Requests < 2: Spoof Actions < 3: Wrapped Object Metamethods 
+			["verbose"] = 4; -- 0: Mute < 1: Script Activity & Requests < 2: Spoof Actions < 3: Wrapped Object Metamethods 
 			["whitelist"] = nil; -- Only output logs that match the whitelist Lua Pattern
 			["blacklist"] = nil; -- Only output logs that don't match the blacklist Lua Pattern
 			["shadow"] = true; -- Hook LogService to ignore OLSSA logs
@@ -94,6 +75,34 @@ do
 		-- (and edit wrapper to automatically return custom env values), tell wrapper it is a modulescript so it changes the tostring 
 		-- of getfenv to another random table value that is different
 	};
+	
+	local function _env_write(k, v)
+		local original_value = _rawget(__env, k)
+		-- Store original value under global name for potential restoration
+		__globals[k] = original_value
+		
+		-- Create reverse mapping from original value to spoofed value
+		-- Only if original exists (nil values can't be table keys)
+		if original_value ~= nil then
+			__globals[original_value] = v
+		end
+		
+		-- Securely set the new value in environment
+		return _rawset(__env, k, v)
+	end
+
+	-- write env spoofing function
+	-- saves to a backup "old" table the original globals
+	-- overwrites __env global
+
+	local __script = script;
+	local __game = game;
+	local __workspace = workspace;
+
+	local __type = type;
+	local __typeof = typeof;
+	local __tostring = tostring;
+	local __debug = debug;
 
 
 	-- Generate a unique OLSSA-session identifier, which can be used to string match logs (and hide them if hooking LogService)
@@ -102,7 +111,7 @@ do
 	local __timestamp = -os.clock(); -- Redefined later with positive timestamp, negative timetamp is then an indicator of an error in OLSSA itself
 
 	-- Assigns a custom tag to the OLSSA thread in the Developer Console for memory usage analysis
-	debug.setmemorycategory(string.format("%s - OLSSA %s %s", script.Name, __config.meta.revision, __identifier))
+	__debug.setmemorycategory(string.format("%s - OLSSA %s %s", script.Name, __config.meta.revision, __identifier))
 
 	-- § Logging
 	local _log = function(level: number, ...: any)
@@ -136,8 +145,37 @@ do
 		local timestamp = math.sign(__timestamp) * math.round((os.clock() - math.abs(__timestamp)) * 1000)
 		local header = string.format("[OLSSA] %s (l%d %dms)", script:GetFullName(), level, timestamp)
 		local content = table.concat((function(args)
-			for i,v in args do
-				args[i] = tostring(v)
+			local function __dump(val, indent, visited)
+				indent = indent or 0
+				visited = visited or {}
+				local ty = type(val)
+				
+				if ty == "table" then
+					if visited[val] then return "<cyclic table>" end
+					visited[val] = true
+					
+					local parts = {string.rep("  ", indent) .. "{"}
+					for k, v in pairs(val) do
+						local keyStr = __tostring(k)
+						local valueStr = __dump(v, indent + 1, visited)
+						table.insert(parts, string.rep("  ", indent + 1).."|→ "..keyStr..": "..valueStr)
+					end
+					table.insert(parts, string.rep("  ", indent) .. "}")
+					return table.concat(parts, "\n")
+				elseif ty == "function" then
+					local name = __debug.info(val, "n") or "anon"
+					local nargs, variadic = __debug.info(val, "a")
+					local addr = tostring(val):match("(0x%x+)$") or "0x----"
+					return string.format("ƒ[%s](%d%s) @%s", name, nargs, variadic and "+" or "", addr)
+				elseif ty == "string" then
+					return string.format("%q", val)
+				else
+					return tostring(val)
+				end
+			end
+		
+			for i, v in ipairs(args) do
+				args[i] = __dump(v, 0, {})
 			end
 			return args
 		end)({...}), ", ")
@@ -150,7 +188,7 @@ do
 			return
 		end
 
-		local stacktrace = processStackTrace(debug.traceback())
+		local stacktrace = processStackTrace(__debug.traceback())
 		local indent = string.rep(" ", 16) -- Padding for Roblox Output Console timestamp
 
 		return warn(table.concat({header, content, __identifier}, " :: "), "\n" .. indent .. stacktrace)
@@ -171,8 +209,9 @@ do
 		end
 
 		-- Core wrapper method with security hardening
-		function self:wrap(obj: any): any
+		function self:wrap(obj: any, cnt: {}?): any
 			if obj == nil then return nil end
+
 			if __cache.wrapped[obj] then return __cache.wrapped[obj] end
 	
 			local original_type = __raw_type(obj)
@@ -182,11 +221,26 @@ do
 				local wrapped = newproxy(true)
 				local meta = getmetatable(wrapped)
 				
-				meta.__index = function(_, key: string): any
+				meta.__index = function(_, key)
 					local raw_value = obj[key]
 					_log(3, "USERDATA_GET", obj, key, raw_value)
+					
+					-- If we're indexing a global that we're spoofing, return it
+					local spoofed_value = cnt and cnt[key]
+					if spoofed_value ~= nil then
+						_log(2, "USERDATA_VALUE_SPOOF", obj, key, spoofed_value)
+						return self:wrap(spoofed_value)
+					end
+
+					-- If we're indexing a global (or index points to original global) that we're spoofing, return the spoofed version
+					local spoofed_global = __globals[raw_value]
+					if spoofed_global ~= nil then
+						_log(2, "USERDATA_GLOBAL_SPOOF", obj, key, spoofed_global)
+						return self:wrap(spoofed_global)
+					end
+					
 					return self:wrap(raw_value)
-				end
+				end			
 	
 				meta.__newindex = function(_, key: string, value: any)
 					_log(3, "USERDATA_SET", obj, key, value)
@@ -268,17 +322,38 @@ do
 		return self
 	end)()
 
-	__env["game"] = _wrapper:wrap(game)
-	__env["workspace"] = _wrapper:wrap(workspace)
+	--[[_game = __olssa_wrap(oldGame,{
+		GetService = function(self, service)
+			__olssa_verb("GetService called with Service: "..tostring(service))
+			if service == "HttpService" then
+				return customHttpService or oldHttpService
+			elseif service == "MarketplaceService" then
+				return customMarketplaceService or oldMarketplaceService
+			elseif service == "RunService" then
+				return customRunService or oldRunService
+			elseif __olssa_configuration.WRAP_GAMESERVICES_SEC then
+				return __olssa_wrap(oldGame:GetService(service))
+			end
+			return oldGame:GetService(service)
+		end,
+		CreatorId = __olssa_configuration.CREATOR_SPOOF and tonumber(__olssa_configuration.CREATOR_OBJ["CreatorId"]) or oldGame.CreatorId,
+		CreatorType = __olssa_configuration.CREATOR_SPOOF and __olssa_configuration.CREATOR_OBJ["CreatorType"] or oldGame.CreatorType,
+		GameId = __olssa_configuration.GAMEID_SPOOF and tonumber(__olssa_configuration.GAMEID_OBJ["GameId"]) or oldGame.GameId,
+		PlaceId = __olssa_configuration.GAMEID_SPOOF and tonumber(__olssa_configuration.GAMEID_OBJ["PlaceId"]) or oldGame.PlaceId,
+	})]]
+	_env_write("game", _wrapper:wrap(game))
+	_env_write("workspace", _wrapper:wrap(workspace))
+	_env_write("print", _wrapper:wrap(print))
 
 	_log(1, "test lol wow")
 	local function test()
 		_log(1, "test2 lol wow")
+		print({["he"] = "lol"; test = true; lol = function(ok, ...) end;})
 		print(game.CreatorId, workspace.Parent.CreatorId, game == workspace.Parent, game == __env["game"], tostring(game), getmetatable(game))
 	end
 	test()
 	
-	debug.resetmemorycategory() -- Reset thread developer console tag
+	__debug.resetmemorycategory() -- Reset thread developer console tag
 	__timestamp = os.clock(); -- Reset timestam
 end -- ⚠️ OLSSA Auditor Snippet End ⚠️
 
