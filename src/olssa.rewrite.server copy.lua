@@ -32,6 +32,7 @@ do
 
 	local __env = _getfenv()
 	local __globals = {}
+	local __wglobals = {}
 
 	-- § Configuration
 	local __config = {
@@ -48,6 +49,7 @@ do
 		};
 
 		["environment"] = {
+			["wrap"] = true; -- If enabled, wraps the base environment to use a metatable with custom __index instead of using rawset for globals
 		};
 		["wrapper"] = {
 			["globals"] = {"script"; "workspace"; "type"; "typeof"; "Instance"}; -- Globals to wrap, apart from spoofed ones
@@ -86,7 +88,12 @@ do
 		end
 		
 		-- Securely set the new value in environment
-		return _rawset(__env, k, v)
+		if not __config.environment.wrap then
+			return _rawset(__env, k, v)
+		else
+			__wglobals[k] = v
+		end
+		return
 	end
 
 	-- write env spoofing function
@@ -220,21 +227,21 @@ do
 				local wrapped = newproxy(true)
 				local meta = getmetatable(wrapped)
 				
-				meta.__index = function(_, key)
-					local raw_value = obj[key]
-					_log(3, "USERDATA_GET", obj, key, raw_value)
+				meta.__index = function(_, k)
+					local raw_value = obj[k]
+					_log(3, "USERDATA_GET", obj, k, raw_value)
 					
 					-- If we're indexing a global that we're spoofing, return it
-					local spoofed_value = cnt and cnt[key]
-					if spoofed_value ~= nil then
-						_log(2, "USERDATA_VALUE_SPOOF", obj, key, spoofed_value)
+					local spoofed_value = cnt and cnt[k]
+					if cnt and spoofed_value ~= nil then
+						_log(2, "USERDATA_VALUE_SPOOF", obj, k, spoofed_value)
 						return self:wrap(spoofed_value)
 					end
 
 					-- If we're indexing a global (or index points to original global) that we're spoofing, return the spoofed version
-					local spoofed_global = __globals[raw_value]
+					local spoofed_global =  __globals[raw_value]
 					if spoofed_global ~= nil then
-						_log(2, "USERDATA_GLOBAL_SPOOF", obj, key, spoofed_global)
+						_log(2, "USERDATA_GLOBAL_SPOOF", obj, k, spoofed_global)
 						return self:wrap(spoofed_global)
 					end
 					
@@ -263,7 +270,22 @@ do
 	
 				setmetatable(wrapped, {
 					__index = function(_, k: any): any
+						local raw_value = obj[k]
 						_log(3, "TABLE_GET", obj, k)
+
+						-- If we're indexing a global that we're spoofing, return it
+						local spoofed_value = cnt and cnt[k]
+						if cnt and spoofed_value ~= nil then
+							_log(2, "TABLE_VALUE_SPOOF", obj, k, spoofed_value)
+							return self:wrap(spoofed_value)
+						end
+
+						-- If we're indexing a global (or index points to original global) that we're spoofing, return the spoofed version
+						local spoofed_global = __globals[raw_value]
+						if spoofed_global ~= nil then
+							_log(2, "TABLE_GLOBAL_SPOOF", obj, k, spoofed_global)
+							return self:wrap(spoofed_global)
+						end
 						return self:wrap(obj[k])
 					end,
 					
@@ -273,7 +295,7 @@ do
 					end,
 					
 					__iter = function()
-						local next_fn, state, init = pairs(obj)
+						local next_fn, state, init = pairs(obj) -- CAREFUL HERE!
 						return function()
 							local k, v = next_fn(state, init)
 							init = k
@@ -321,7 +343,6 @@ do
 		return self
 	end)()
 
-	
 	-- § Wrap globals
 	-- !NOTE: rawget(__env, global) should always be nil?
 	for _, global in __config.wrapper.globals do
@@ -357,8 +378,12 @@ do
 		PlaceId = __olssa_configuration.GAMEID_SPOOF and tonumber(__olssa_configuration.GAMEID_OBJ["PlaceId"]) or oldGame.PlaceId,
 	})]]
 	_env_write("game", _wrapper:wrap(game))
-	--_env_write("workspace", _wrapper:wrap(workspace))
 	_env_write("print", _wrapper:wrap(print))
+
+	-- § Wrap environment
+	if __config.environment.wrap then
+		_setfenv(1, _wrapper:wrap(__env, __wglobals)) --, __wglobals
+	end
 
 	_log(1, "test lol wow")
 	local function test()
