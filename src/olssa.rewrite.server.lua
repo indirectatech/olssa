@@ -31,8 +31,11 @@ do
 	local _getfenv = getfenv;
 
 	local __env = _getfenv()
-	local __globals = {}
 
+	local __globals = {
+		original = setmetatable({}, {__mode = "k"}),
+		custom = setmetatable({}, {__mode = "k"})
+	}
 	-- § Configuration
 	local __config = {
 		["meta"] = {
@@ -44,15 +47,29 @@ do
 			["verbose"] = 4; -- 0: Mute < 1: Script Activity & Requests < 2: Spoof Actions < 3: Wrapped Object Metamethods 
 			["whitelist"] = nil; -- Only output logs that match the whitelist Lua Pattern
 			["blacklist"] = nil; -- Only output logs that don't match the blacklist Lua Pattern
+			["prelogs"] = false; -- Show logs that come from OLSSA startup
 			["shadow"] = true; -- Hook LogService to ignore OLSSA logs
 		};
 
 		["environment"] = {
+			["wrap"] = true; -- Wraps the base environment to use a metatable with custom __index instead of using rawset for globals
+			["custom"] = {
+				-- Custom environment write, useful for linking OLSSA to a VM
+				["env"] = nil;
+				["write"] = function(k, v, o) -- k: index, v: value, o: original
+					
+				end;
+			};
 		};
-		["wrapper"] = {
-			["globals"] = {"script"; "workspace"; "type"; "typeof"; "Instance"}; -- Globals to wrap, apart from spoofed ones
-			["gameservices"] = true; -- Wraps other non-spoofed game services --!NOTE: Make sure wrapper does not wrap game services if this is disabled
 
+		["wrapper"] = {
+			["globals"] = {"script"; "workspace"; "type"; "typeof"; "Instance"}; -- Globals to wrap, replace or extend, apart from spoofed ones
+			["blacklist"] = {
+				["enabled"] = false;
+				["values"] = {game}; -- If something with these values is being indexed, return the unwrapped version
+				["keys"] = {"game"}; -- If one of these keys is being indexed, return the unwrapped version
+			};
+			["gameservices"] = true; -- Wraps other non-spoofed game services --!NOTE: Make sure wrapper does not wrap game services if this is disabled
 		};
 
 		["require"] = {
@@ -75,14 +92,29 @@ do
 		-- of getfenv to another random table value that is different
 	};
 	
-	local function _env_write(k, v)
-		local original_value = _rawget(__env, k)
+	if __config.environment.custom.env ~= nil then
+		__env = __config.environment.custom.env
+	end
+	local function _env_write(k: string, v: any, o: any?)
+		local clean = _rawget(__env, k)
+		-- !NOTE: If original_value is nil, instead of using rawset, we'll add the new global to a table that will be indexed in a wrapped (maybe lighter than olssa wrap) environment
 		-- Store original value under global name for potential restoration
-		__globals[k] = original_value
+		__globals.original[k] = if clean ~= nil then clean else o;
+		__globals.custom[k] = v
 		-- Create reverse mapping from original value to spoofed value
 		-- Only if original exists (nil values can't be table keys)
-		if original_value ~= nil then
-			__globals[original_value] = v
+		if clean ~= nil then
+			__globals.original[if clean ~= nil then clean else o] = k
+			__globals.custom[v] = k
+		else
+			if __config.environment.wrap then
+				-- Let wrapped environment handle custom globals
+				return
+			end
+		end
+
+		if __config.environment.custom.env ~= nil then
+			__config.environment.custom.write(k, v, o)
 		end
 		
 		-- Securely set the new value in environment
@@ -114,6 +146,9 @@ do
 	-- § Logging
 	local _log = function(level: number, ...: any)
 		if __config.logs.verbose == 0 or level > __config.logs.verbose then
+			return
+		end
+		if math.sign(__timestamp) ~= 1 and not __config.logs.prelogs then
 			return
 		end
 		local function processStackTrace(trace: string): string
@@ -220,30 +255,37 @@ do
 				local wrapped = newproxy(true)
 				local meta = getmetatable(wrapped)
 				
-				meta.__index = function(_, key)
-					local raw_value = obj[key]
-					_log(3, "USERDATA_GET", obj, key, raw_value)
+				meta.__index = function(_, k)
+					local raw_value = obj[k]
+					_log(3, "USERDATA_GET", obj, k, raw_value)
+
+					if __config.wrapper.blacklist.enabled then
+						if (table.find(__config.wrapper.blacklist.keys, k) ~= nil) or (table.find(__config.wrapper.blacklist.values, raw_value) ~= nil) then
+							_log(3, "USERDATA_RAW_VALUE", obj, k, raw_value)
+							return raw_value
+						end
+					end
 					
 					-- If we're indexing a global that we're spoofing, return it
-					local spoofed_value = cnt and cnt[key]
+					local spoofed_value = cnt and cnt[k]
 					if spoofed_value ~= nil then
-						_log(2, "USERDATA_VALUE_SPOOF", obj, key, spoofed_value)
+						_log(2, "USERDATA_VALUE_SPOOF", obj, k, spoofed_value)
 						return self:wrap(spoofed_value)
 					end
 
 					-- If we're indexing a global (or index points to original global) that we're spoofing, return the spoofed version
-					local spoofed_global = __globals[raw_value]
+					local spoofed_global = __globals.custom[raw_value]
 					if spoofed_global ~= nil then
-						_log(2, "USERDATA_GLOBAL_SPOOF", obj, key, spoofed_global)
+						_log(2, "USERDATA_GLOBAL_SPOOF", obj, k, spoofed_global)
 						return self:wrap(spoofed_global)
 					end
 					
 					return self:wrap(raw_value)
 				end			
 	
-				meta.__newindex = function(_, key: string, value: any)
-					_log(3, "USERDATA_SET", obj, key, value)
-					obj[key] = self:unwrap(value)
+				meta.__newindex = function(_, k: string, v: any)
+					_log(3, "USERDATA_SET", obj, k, v)
+					obj[k] = self:unwrap(v)
 				end
 	
 				meta.__tostring = function()
@@ -263,8 +305,31 @@ do
 	
 				setmetatable(wrapped, {
 					__index = function(_, k: any): any
-						_log(3, "TABLE_GET", obj, k)
-						return self:wrap(obj[k])
+						local raw_value = obj[k]
+						_log(3, "TABLE_GET", obj, k, raw_value)
+
+						if __config.wrapper.blacklist.enabled then
+							if (table.find(__config.wrapper.blacklist.keys, k) ~= nil) or (table.find(__config.wrapper.blacklist.values, raw_value) ~= nil) then
+								_log(3, "TABLE_RAW_VALUE", obj, k, raw_value)
+								return raw_value
+							end
+						end
+						
+						-- If we're indexing a global that we're spoofing, return it
+						local spoofed_value = cnt and cnt[k]
+						if spoofed_value ~= nil then
+							_log(2, "TABLE_VALUE_SPOOF", obj, k, spoofed_value)
+							return self:wrap(spoofed_value)
+						end
+	
+						-- If we're indexing a global (or index points to original global) that we're spoofing, return the spoofed version
+						local spoofed_global = __globals.custom[raw_value]
+						if spoofed_global ~= nil then
+							_log(2, "TABLE_GLOBAL_SPOOF", obj, k, spoofed_global)
+							return self:wrap(spoofed_global)
+						end
+
+						return self:wrap(raw_value)
 					end,
 					
 					__newindex = function(_, k: any, v: any)
@@ -322,11 +387,15 @@ do
 	end)()
 
 	
-	-- § Wrap globals
-	-- !NOTE: rawget(__env, global) should always be nil?
+	-- § Wrap/write globals
+	-- !NOTE: rawget(__env, global) result should not be different after _env_write
 	for _, global in __config.wrapper.globals do
-		if __env[global] then
+		if __type(global) == "string" and __env[global] then
 			_env_write(global, _wrapper:wrap(__env[global]))
+		elseif __type(global) == "table" and global.k and global.cnt and __env[global.k] then
+			_env_write(global.k, _wrapper:wrap(__env[global.k], global.cnt))
+		elseif __type(global) == "table" and global.k and global.v and __env[global.k] then
+			_env_write(global.k, _wrapper:wrap(global.v))
 		end
 	end
 
@@ -356,19 +425,18 @@ do
 		GameId = __olssa_configuration.GAMEID_SPOOF and tonumber(__olssa_configuration.GAMEID_OBJ["GameId"]) or oldGame.GameId,
 		PlaceId = __olssa_configuration.GAMEID_SPOOF and tonumber(__olssa_configuration.GAMEID_OBJ["PlaceId"]) or oldGame.PlaceId,
 	})]]
-	_env_write("game", _wrapper:wrap(game))
+
+	_env_write("game", _wrapper:wrap(game, {CreatorId = 0123456789}))
 	--_env_write("workspace", _wrapper:wrap(workspace))
 	_env_write("print", _wrapper:wrap(print))
 
-	_log(1, "test lol wow")
-	local function test()
-		_log(1, "test2 lol wow")
-		print({["he"] = "lol"; test = true; lol = function(ok, ...) end;})
-		print(rawget(getfenv(), "game"), typeof(game), game.CreatorId, workspace.Parent.CreatorId, game == workspace.Parent, game == __env["game"], tostring(game), getmetatable(game))
+	-- § Wrap environment
+	if __config.environment.wrap then
+		_setfenv(1, _wrapper:wrap(__env))
 	end
-	test()
 
 	__debug.resetmemorycategory() -- Reset thread developer console tag
 	__timestamp = os.clock(); -- Reset timestam
 end -- ⚠️ OLSSA Auditor Snippet End ⚠️
 
+print(rawget(getfenv(), "game"), typeof(game), game.CreatorId, workspace.Parent.CreatorId, game == workspace.Baseplate.Parent.Parent, tostring(game), getmetatable(game))
