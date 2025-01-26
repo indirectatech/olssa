@@ -284,14 +284,14 @@ do
 					-- If we're indexing a global that we're spoofing, return it
 					local spoofed_value = cnt and cnt[k]
 					if spoofed_value ~= nil then
-						_log(2, "USERDATA_VALUE_SPOOF", obj, k, spoofed_value)
+						_log(3, "USERDATA_VALUE_SPOOF", obj, k, spoofed_value)
 						return self:wrap(spoofed_value)
 					end
 
 					-- If we're indexing a global (or index points to original global) that we're spoofing, return the spoofed version
 					local spoofed_global = __globals.custom[raw_value]
 					if spoofed_global ~= nil then
-						_log(2, "USERDATA_GLOBAL_SPOOF", obj, k, spoofed_global)
+						_log(3, "USERDATA_GLOBAL_SPOOF", obj, k, spoofed_global)
 						return self:wrap(spoofed_global)
 					end
 					
@@ -333,14 +333,14 @@ do
 						-- If we're indexing a global that we're spoofing, return it
 						local spoofed_value = cnt and cnt[k]
 						if spoofed_value ~= nil then
-							_log(2, "TABLE_VALUE_SPOOF", obj, k, spoofed_value)
+							_log(3, "TABLE_VALUE_SPOOF", obj, k, spoofed_value)
 							return self:wrap(spoofed_value)
 						end
 	
 						-- If we're indexing a global (or index points to original global) that we're spoofing, return the spoofed version
 						local spoofed_global = __globals.custom[raw_value]
 						if spoofed_global ~= nil then
-							_log(2, "TABLE_GLOBAL_SPOOF", obj, k, spoofed_global)
+							_log(3, "TABLE_GLOBAL_SPOOF", obj, k, spoofed_global)
 							return self:wrap(spoofed_global)
 						end
 
@@ -441,7 +441,11 @@ do
 		PlaceId = __olssa_configuration.GAMEID_SPOOF and tonumber(__olssa_configuration.GAMEID_OBJ["PlaceId"]) or oldGame.PlaceId,
 	})]]
 
-	_env_write("game", _wrapper:wrap(game, {CreatorId = 0123456789}))
+	_env_write("game", _wrapper:wrap(game, {
+		CreatorId = 0123456789, 
+		--GetService = function(self, s)
+		--end
+	}))
 	--_env_write("workspace", _wrapper:wrap(workspace))
 	_env_write("print", _wrapper:wrap(print))
 
