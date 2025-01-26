@@ -104,9 +104,10 @@ do
 		-- Create reverse mapping from original value to spoofed value
 		-- Only if original exists (nil values can't be table keys)
 		if clean ~= nil then
-			__globals.original[if clean ~= nil then clean else o] = k
+			__globals.original[clean] = k
 			__globals.custom[v] = k
 		else
+			-- handle original[o] = k if o ~= nil
 			if __config.environment.wrap then
 				-- Let wrapped environment handle custom globals
 				return
@@ -421,6 +422,41 @@ do
 
 	-- § 'LogService' Shadow OLSSA Logs Spoof
 	-- § 'require' Hook
+		local __require = require
+		_env_write("require", function(v: ModuleScript|any?)
+			if __typeof(v) == 'Instance' then
+				v = _wrapper:unwrap(v) -- Unwrap module, as it could cause issues being accepted by require function
+				_log(1, "REQUIRE_INT", v:GetFullName())
+			else
+				_log(1, "REQUIRE_EXT", v)
+				if __config.require.spoof then
+					local mobj = __config.require:lookup(v)
+					if mobj ~= nil then
+						_log(2, "REQUIRE_SPOOF", v, mobj.Name)
+						v = mobj
+					else
+						_log(2, "REQUIRE_RAW", v)
+					end
+				end
+			end
+			local o = __require(v)
+			_log(1, "REQUIRE_DATA", {o})
+			return _wrapper:wrap(o)
+		end)
+		--[[["require"] = {
+			["spoof"] = true;
+			["folder"] = workspace;
+			["prefix"] = "OLSSA:";
+			["lookup"] = function(self, module: number)
+				-- Spoof ModuleScript Instance to return when require is called with an AssetId
+				-- Lookup function can be edited to access differently named modules based on id, for example
+				return self.folder:WaitForChild(string.format("%s%d", self.prefix, module), 15)
+			end;
+			["name"] = "MainModule"; -- Any ModuleScript matching the OLSSA prefix, that is being indexed through a wrapped object, will have this spoofed name
+			["sandbox"] = true; -- Iterates through ModuleScript returned data and sets all function environments to this one
+								-- !NOTE: tostring(getfenv()) would be the same across this script and then ModuleScript, this shouldn't be the case, DETECTABLE!
+		};]]
+
 	-- § 'game:GetService' Hook and ID Spoof
 	-- § 'HttpService' Traffic Hook & Enabled Spoof
 	-- § 'MarketplaceService' Select-product ownership Spoof
@@ -465,6 +501,7 @@ end -- ⚠️ OLSSA Auditor Snippet End ⚠️
 
 -- Benchmark performance
 local start = os.clock()
-for i=1,1e6 do game:GetService("Workspace") end
-print("Wrapped access time:", os.clock()-start) -- Target <0.1s
+--for i=1,1e6 do game:GetService("Workspace") end
+--print("Wrapped access time:", os.clock()-start) -- Target <0.1s
+print(require(145458))
 print(getmetatable(getfenv()), rawget(getfenv(), "game"), typeof(game), game.CreatorId, workspace.Parent.CreatorId, game == workspace.Baseplate.Parent.Parent, tostring(game), getmetatable(game))
