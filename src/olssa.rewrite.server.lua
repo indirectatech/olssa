@@ -52,6 +52,7 @@ do
 
 		["environment"] = {
 			["wrap"] = true; -- Wraps the base environment to use a metatable with custom __index instead of using rawset for globals
+			["light"] = true; -- Keeps the environment wrapping to a minimum, returning either custom values & globals, or raw values
 			["custom"] = {
 				-- Custom environment write, useful for linking OLSSA to a VM
 				["env"] = nil;
@@ -62,7 +63,7 @@ do
 		};
 
 		["wrapper"] = {
-			["globals"] = {"script"; "workspace"; "type"; "typeof"; "Instance"}; -- Globals to wrap, replace or extend, apart from spoofed ones
+			["globals"] = {"script"; "workspace"; "type"; "typeof"; "Instance"; "tostring"}; -- Globals to wrap, replace or extend, apart from spoofed ones
 			["blacklist"] = {
 				["enabled"] = false;
 				["values"] = {}; -- If something with these values is being indexed, return the unwrapped version
@@ -257,7 +258,7 @@ do
 		end
 
 		-- Core wrapper method with security hardening
-		function self:wrap(obj: any, cnt: {}?): any
+		function self:wrap(obj: any, cnt: {}?, onlycnt: boolean?): any
 			if obj == nil then return nil end
 
 			if __cache.wrapped[obj] then return __cache.wrapped[obj] end
@@ -294,7 +295,9 @@ do
 						_log(3, "USERDATA_GLOBAL_SPOOF", obj, k, spoofed_global)
 						return self:wrap(spoofed_global)
 					end
-					
+
+					if onlycnt then return raw_value end
+
 					return self:wrap(raw_value)
 				end			
 	
@@ -343,6 +346,8 @@ do
 							_log(3, "TABLE_GLOBAL_SPOOF", obj, k, spoofed_global)
 							return self:wrap(spoofed_global)
 						end
+
+						if onlycnt then return raw_value end
 
 						return self:wrap(raw_value)
 					end,
@@ -451,7 +456,7 @@ do
 
 	-- § Wrap environment
 	if __config.environment.wrap then
-		_setfenv(1, _wrapper:wrap(__env))
+		_setfenv(1, _wrapper:wrap(__env, nil, __config.environment.light))
 	end
 
 	__debug.resetmemorycategory() -- Reset thread developer console tag
