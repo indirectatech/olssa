@@ -27,7 +27,7 @@ do
 	 -- Base Environment & Original Globals
 	local _rawget = rawget; local _rawset = rawset; local _setfenv = setfenv; local _getfenv = getfenv;
 	local _setmetatable = setmetatable; local _getmetatable = getmetatable;
-	local _unpack = unpack; local _select = select;
+
 	local __env = _getfenv()
 
 	local __globals = {
@@ -43,7 +43,7 @@ do
 
 		["logs"] = {
 			-- 0: Mute < 1: Script Activity & Requests < 2: Spoof Actions < 3: Wrapped Object Metamethods < 4: Detailed table, function dumps
-			["verbose"] = 2;
+			["verbose"] = 3;
 			["whitelist"] = nil; -- Only output logs that match the whitelist Lua Pattern
 			["blacklist"] = nil; -- Only output logs that don't match the blacklist Lua Pattern
 			["prelogs"] = false; -- Show logs that come from OLSSA startup
@@ -163,7 +163,7 @@ do
 
 				if not number then continue end
 	
-				local name = fullname and _select(1, fullname:gsub(__script:GetFullName(), "(script)")) or "(main)" --fullname:match("[^%.]+$") or "Unknown"
+				local name = fullname and select(1, fullname:gsub(__script:GetFullName(), "(script)")) or "(main)" --fullname:match("[^%.]+$") or "Unknown"
 				local entry = func and string.format("%s.%s:%s", name, func, number)
 							  or string.format("%s:%s", name, number)
 				
@@ -234,7 +234,8 @@ do
 		-- Weak cache tables with string-based keys for security
 		local __cache = {
 			original = _setmetatable({}, {__mode = "k"}),
-			wrapped = _setmetatable({}, {__mode = "k"})
+			wrapped = _setmetatable({}, {__mode = "k"}),
+			content = _setmetatable({}, {__mode = "k"})
 		}
 
 		-- During configuration initialization
@@ -255,112 +256,137 @@ do
 		local function __raw_type(obj: any): string
 			return __type(obj)--__typeof(rawget(obj, "::original::") or obj)
 		end
+		
+		local userdata_meta = {
+			__index = function(t, k)
+				local obj = __cache.original[t]
+				local cnt = __cache.content[t]
+
+				local raw_value = obj[k]
+				_log(3, "USERDATA_GET", obj, k, raw_value)
+
+				if __config.wrapper.blacklist.enabled then
+					if (__blacklist.keys[k] ~= nil) or (__blacklist.values[raw_value] ~= nil) then
+						_log(3, "USERDATA_RAW_VALUE", obj, k, raw_value)
+						return raw_value
+					end
+				end
+				
+				-- If we're indexing a global that we're spoofing, return it
+				local spoofed_value = cnt and cnt[k]
+				if spoofed_value ~= nil then
+					_log(2, "USERDATA_VALUE_SPOOF", obj, k, spoofed_value)
+					return self:wrap(spoofed_value)
+				end
+
+				-- If we're indexing a global (or index points to original global) that we're spoofing, return the spoofed version
+				local spoofed_global = __globals.custom[raw_value]
+				if spoofed_global ~= nil then
+					_log(2, "USERDATA_GLOBAL_SPOOF", obj, k, spoofed_global)
+					return self:wrap(spoofed_global)
+				end
+				
+				return self:wrap(raw_value)
+			end;
+			__newindex = function(t, k: string, v: any)
+				local obj = __cache.original[t]
+
+				_log(3, "USERDATA_SET", obj, k, v)
+				obj[k] = self:unwrap(v)
+			end;
+
+			__tostring = function(t)
+				return tostring(__cache.original[t])
+			end;
+			-- __metatable added by wrapper
+		};
+
+		local table_meta = {
+			__index = function(t, k)
+				local obj = __cache.original[t]
+				local cnt = __cache.content[t]
+
+				local raw_value = obj[k]
+				_log(3, "TABLE_GET", obj, k, raw_value)
+
+				if __config.wrapper.blacklist.enabled then
+					if (__blacklist.keys[k] ~= nil) or (__blacklist.values[raw_value] ~= nil) then
+						_log(3, "TABLE_RAW_VALUE", obj, k, raw_value)
+						return raw_value
+					end
+				end
+				
+				-- If we're indexing a global that we're spoofing, return it
+				local spoofed_value = cnt and cnt[k]
+				if spoofed_value ~= nil then
+					_log(2, "TABLE_VALUE_SPOOF", obj, k, spoofed_value)
+					return self:wrap(spoofed_value)
+				end
+
+				-- If we're indexing a global (or index points to original global) that we're spoofing, return the spoofed version
+				local spoofed_global = __globals.custom[raw_value]
+				if spoofed_global ~= nil then
+					_log(2, "TABLE_GLOBAL_SPOOF", obj, k, spoofed_global)
+					return self:wrap(spoofed_global)
+				end
+				
+				return self:wrap(raw_value)
+			end;
+			__newindex = function(t, k: string, v: any)
+				local obj = __cache.original[t]
+
+				_log(3, "TABLE_SET", obj, k, v)
+				obj[k] = self:unwrap(v)
+			end;
+
+			__tostring = function(t)
+				return tostring(__cache.original[t])
+			end;
+			__iter = function(t)
+				local next_fn, state, init = pairs(t)
+				return function()
+					local k, v = next_fn(state, init)
+					init = k
+					return self:wrap(k), self:wrap(v)
+				end
+			end;
+			-- __metatable added by wrapper
+		};
 
 		-- Core wrapper method with security hardening
 		function self:wrap(obj: any, cnt: {}?): any
 			if obj == nil then return nil end
 
 			if __cache.wrapped[obj] then return __cache.wrapped[obj] end
-	
+
 			local original_type = __raw_type(obj)
-			
+
 			-- Userdata proxy with native behavior preservation
 			if original_type == "userdata" then
 				local wrapped = newproxy(true)
-				local meta = _getmetatable(wrapped)
-				
-				meta.__index = function(_, k)
-					
-					local raw_value = obj[k]
-					_log(3, "USERDATA_GET", obj, k, raw_value)
 
-					if __config.wrapper.blacklist.enabled then
-						if (__blacklist.keys[k] ~= nil) or (__blacklist.values[raw_value] ~= nil) then
-							_log(3, "USERDATA_RAW_VALUE", obj, k, raw_value)
-							return raw_value
-						end
-					end
-					
-					-- If we're indexing a global that we're spoofing, return it
-					local spoofed_value = cnt and cnt[k]
-					if spoofed_value ~= nil then
-						_log(2, "USERDATA_VALUE_SPOOF", obj, k, spoofed_value)
-						return self:wrap(spoofed_value)
-					end
-
-					-- If we're indexing a global (or index points to original global) that we're spoofing, return the spoofed version
-					local spoofed_global = __globals.custom[raw_value]
-					if spoofed_global ~= nil then
-						_log(2, "USERDATA_GLOBAL_SPOOF", obj, k, spoofed_global)
-						return self:wrap(spoofed_global)
-					end
-					
-					return self:wrap(raw_value)
-				end			
-	
-				meta.__newindex = function(_, k: string, v: any)
-					_log(3, "USERDATA_SET", obj, k, v)
-					obj[k] = self:unwrap(v)
-				end
-	
-				meta.__tostring = function()
-					return tostring(obj)
-				end
-	
-				meta.__metatable = _getmetatable(obj)
 				__cache.wrapped[obj] = wrapped
 				__cache.original[wrapped] = obj
+				__cache.content[wrapped] = cnt
+
+				local meta = _getmetatable(wrapped)
+				
+				for k,v in userdata_meta do
+					meta[k] = v
+				end
+
 				return wrapped
-	
+
 			-- Table proxy with access monitoring
 			elseif original_type == "table" then
 				local wrapped = {}
+
 				__cache.wrapped[obj] = wrapped
 				__cache.original[wrapped] = obj
-	
-				_setmetatable(wrapped, {
-					__index = function(_, k: any): any
-						local raw_value = obj[k]
-						_log(3, "TABLE_GET", obj, k, raw_value)
+				__cache.content[wrapped] = cnt
 
-						if __config.wrapper.blacklist.enabled then
-							if (__blacklist.keys[k] ~= nil) or (__blacklist.values[raw_value] ~= nil) then
-								_log(3, "TABLE_RAW_VALUE", obj, k, raw_value)
-								return raw_value
-							end
-						end
-						
-						-- If we're indexing a global that we're spoofing, return it
-						local spoofed_value = cnt and cnt[k]
-						if spoofed_value ~= nil then
-							_log(2, "TABLE_VALUE_SPOOF", obj, k, spoofed_value)
-							return self:wrap(spoofed_value)
-						end
-	
-						-- If we're indexing a global (or index points to original global) that we're spoofing, return the spoofed version
-						local spoofed_global = __globals.custom[raw_value]
-						if spoofed_global ~= nil then
-							_log(2, "TABLE_GLOBAL_SPOOF", obj, k, spoofed_global)
-							return self:wrap(spoofed_global)
-						end
+				_setmetatable(wrapped, {unpack(table_meta), __metatable = _getmetatable(obj)})
 
-						return self:wrap(raw_value)
-					end,
-					
-					__newindex = function(_, k: any, v: any)
-						_log(3, "TABLE_SET", obj, k)
-						obj[k] = self:unwrap(v)
-					end,
-					
-					__iter = function()
-						local next_fn, state, init = pairs(obj)
-						return function()
-							local k, v = next_fn(state, init)
-							init = k
-							return self:wrap(k), self:wrap(v)
-						end
-					end
-				})
 				return wrapped
 	
 			-- Function wrapper with call monitoring
@@ -369,20 +395,20 @@ do
 				local wrapped = function(...: any): ...any
 					_log(4, "CALL_FUNCTION", obj, ...)
 					local args = {...}
-					for i = 1, _select('#', ...) do
+					for i = 1, #args do
 						args[i] = self:unwrap(args[i])
 					end
 	
-					local success, results = pcall(obj, _unpack(args))
+					local success, results = pcall(obj, table.unpack(args, 1, #args))
 					if not success then
 						error(results, 2)
 					end
 	
-					results = {results}
+					results = table.pack(results)
 					for i = 1, #results do
 						results[i] = self:wrap(results[i])
 					end
-					return _unpack(results)
+					return table.unpack(results, 1, #results)
 				end
 	
 				__cache.wrapped[obj] = wrapped
@@ -456,6 +482,6 @@ end -- ⚠️ OLSSA Auditor Snippet End ⚠️
 
 -- Benchmark performance
 local start = os.clock()
-for i=1,1e6 do game:GetService("Workspace") end
+--for i=1,1e6 do game:GetService("Workspace") end
 print("Wrapped access time:", os.clock()-start) -- Target <0.1s
 print(getmetatable(getfenv()), rawget(getfenv(), "game"), typeof(game), game.CreatorId, workspace.Parent.CreatorId, game == workspace.Baseplate.Parent.Parent, tostring(game), getmetatable(game))
