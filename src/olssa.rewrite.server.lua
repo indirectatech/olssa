@@ -40,7 +40,7 @@ do
 	local __config = {
 		["meta"] = {
 			["revision"] = "rewrite";
-			["date"] = "23/01/2025"; -- dd/mm/yyyy
+			["date"] = "25/01/2025"; -- dd/mm/yyyy
 		};
 
 		["logs"] = {
@@ -66,8 +66,8 @@ do
 			["globals"] = {"script"; "workspace"; "type"; "typeof"; "Instance"}; -- Globals to wrap, replace or extend, apart from spoofed ones
 			["blacklist"] = {
 				["enabled"] = false;
-				["values"] = {game}; -- If something with these values is being indexed, return the unwrapped version
-				["keys"] = {"game"}; -- If one of these keys is being indexed, return the unwrapped version
+				["values"] = {}; -- If something with these values is being indexed, return the unwrapped version
+				["keys"] = {}; -- If one of these keys is being indexed, return the unwrapped version
 			};
 			["gameservices"] = true; -- Wraps other non-spoofed game services --!NOTE: Make sure wrapper does not wrap game services if this is disabled
 		};
@@ -237,7 +237,22 @@ do
 			original = setmetatable({}, {__mode = "k"}),
 			wrapped = setmetatable({}, {__mode = "k"})
 		}
-	
+
+		-- During configuration initialization
+		local __blacklist = {
+    		keys = setmetatable({}, {__mode = "k"}),
+    		values = setmetatable({}, {__mode = "v"})
+		}
+
+		-- Convert array blacklists to hash tables once during init
+		for _, k in ipairs(__config.wrapper.blacklist.keys) do
+  			__blacklist.keys[k] = true
+		end
+
+		for _, v in ipairs(__config.wrapper.blacklist.values) do
+		    __blacklist.values[v] = true
+		end
+
 		local function __raw_type(obj: any): string
 			return __type(obj)--__typeof(rawget(obj, "::original::") or obj)
 		end
@@ -256,11 +271,12 @@ do
 				local meta = getmetatable(wrapped)
 				
 				meta.__index = function(_, k)
+					
 					local raw_value = obj[k]
 					_log(3, "USERDATA_GET", obj, k, raw_value)
 
 					if __config.wrapper.blacklist.enabled then
-						if (table.find(__config.wrapper.blacklist.keys, k) ~= nil) or (table.find(__config.wrapper.blacklist.values, raw_value) ~= nil) then
+						if (__blacklist.keys[k] ~= nil) or (__blacklist.values[raw_value] ~= nil) then
 							_log(3, "USERDATA_RAW_VALUE", obj, k, raw_value)
 							return raw_value
 						end
@@ -309,7 +325,7 @@ do
 						_log(3, "TABLE_GET", obj, k, raw_value)
 
 						if __config.wrapper.blacklist.enabled then
-							if (table.find(__config.wrapper.blacklist.keys, k) ~= nil) or (table.find(__config.wrapper.blacklist.values, raw_value) ~= nil) then
+							if (__blacklist.keys[k] ~= nil) or (__blacklist.values[raw_value] ~= nil) then
 								_log(3, "TABLE_RAW_VALUE", obj, k, raw_value)
 								return raw_value
 							end
@@ -439,4 +455,8 @@ do
 	__timestamp = os.clock(); -- Reset timestam
 end -- ⚠️ OLSSA Auditor Snippet End ⚠️
 
-print(rawget(getfenv(), "game"), typeof(game), game.CreatorId, workspace.Parent.CreatorId, game == workspace.Baseplate.Parent.Parent, tostring(game), getmetatable(game))
+-- Benchmark performance
+local start = os.clock()
+for i=1,1e6 do game:GetService("Workspace") end
+print("Wrapped access time:", os.clock()-start) -- Target <0.1s
+print(getmetatable(getfenv()), rawget(getfenv(), "game"), typeof(game), game.CreatorId, workspace.Parent.CreatorId, game == workspace.Baseplate.Parent.Parent, tostring(game), getmetatable(game))
