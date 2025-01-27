@@ -94,6 +94,14 @@ do
 				["type"] = "User"; -- "User"/"Group"
 				["id"] = 123456789; -- Creator Id
 			};
+			["universe"] = {
+				["spoof"] = true; -- Enable universe id spoof
+				["id"] = 123456789; -- Universe Id
+			};
+			["place"] = {
+				["spoof"] = true; -- Enable place id spoof
+				["id"] = 123456789; -- Universe Id
+			};
 		};
 		["httpservice"] = {
 			["spoof"] = true; -- Spoofs game's HttpService with a custom version, 'game' hook must be enabled
@@ -510,15 +518,19 @@ do
 		PlaceId = __olssa_configuration.GAMEID_SPOOF and tonumber(__olssa_configuration.GAMEID_OBJ["PlaceId"]) or oldGame.PlaceId,
 	})]]
 	
-
-	_env_write("game", _wrapper:wrap(game, {
-		CreatorId = if __config.game.creator.spoof then __config.game.creator.id else __game.CreatorId,
-		CreatorType = if __config.game.creator.spoof then Enum.CreatorType:FromName(__config.game.creator.type) else __game.CreatorType,
-		--GetService = function(self, s)
-		--end
-	}), game)
+	if __config.game.hook then
+		_env_write("game", _wrapper:wrap(game, {
+			CreatorId = if __config.game.creator.spoof then __config.game.creator.id else __game.CreatorId,
+			CreatorType = if __config.game.creator.spoof then Enum.CreatorType:FromName(__config.game.creator.type) else __game.CreatorType,
+			GameId = if __config.game.universe.spoof then __config.game.universe.id else __game.GameId,
+			PlaceId = if __config.game.place.spoof then __config.game.place.id else __game.PlaceId,
+			--GetService = function(self, s)
+			--end
+		}), game)
+	end
+	
 	--_env_write("workspace", _wrapper:wrap(workspace))
-	_env_write("print", _wrapper:wrap(print))
+	--_env_write("print", _wrapper:wrap(print))
 
 	-- § Wrap environment
 	if __config.environment.wrap then
