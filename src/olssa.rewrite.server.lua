@@ -20,20 +20,21 @@
 		<https://www.gnu.org/licenses/gpl-3.0.html>
 ]]
 
--- ⚠️ Make sure to use the auditor at the top of any script to prevent environment leaks ⚠️
+-- ⚠️ Make sure to paste the auditor snippet at the beginning of the script for the intended behavior ⚠️
+--================----==OLSSABEGIN==----================--
 do
-	-- !NOTE: DO NOT declare globals anywhere; Declare local variables ONLY INSIDE THE DO, otherwise it will be accessible to code below auditor
-
-	 -- Base Environment & Original Globals
+	-- § Internally used globals
 	local _rawget = rawget; local _rawset = rawset; local _setfenv = setfenv; local _getfenv = getfenv;
 	local _setmetatable = setmetatable; local _getmetatable = getmetatable;
 	local _unpack = unpack; local _select = select;
+
 	local __env = _getfenv()
 
 	local __globals = {
 		original = _setmetatable({}, {__mode = "k"}),
 		custom = _setmetatable({}, {__mode = "k"})
 	}
+	
 	-- § Configuration
 	local __config = {
 		["meta"] = {
@@ -53,6 +54,7 @@ do
 		["environment"] = {
 			["wrap"] = true; -- Wraps the base environment to use a metatable with custom __index instead of using rawset for globals
 			["light"] = true; -- Keeps the environment wrapping to a minimum, returning either custom values & globals, or raw values
+			["usekeys"] = false; -- Uses key-based global spoofing instead of value-based in the environment wrapper
 			["custom"] = {
 				-- Custom environment write, useful for linking OLSSA to a VM
 				["env"] = nil;
@@ -69,29 +71,74 @@ do
 				["values"] = {}; -- If something with these values is being indexed, return the unwrapped version
 				["keys"] = {}; -- If one of these keys is being indexed, return the unwrapped version
 			};
-			["gameservices"] = true; -- Wraps other non-spoofed game services --!NOTE: Make sure wrapper does not wrap game services if this is disabled
 		};
 
 		["require"] = {
-			["spoof"] = true;
-			["folder"] = workspace;
-			["prefix"] = "OLSSA:";
+			["hook"] = true; -- Enable require hook
+			["spoof"] = true; -- Hook should look up a local version of an external require
+			["folder"] = workspace; -- Spoofed local modules folder
+			["prefix"] = "OLSSA:"; -- Naming scheme used by local modules for spoofing, prefix + assetid
 			["lookup"] = function(self, module: number)
 				-- Spoof ModuleScript Instance to return when require is called with an AssetId
-				-- Lookup function can be edited to access differently named modules based on id, for example
+				-- Lookup function can be edited to access differently named modules based on id or for other use cases
 				return self.folder:WaitForChild(string.format("%s%d", self.prefix, module), 15)
 			end;
-			["name"] = "MainModule"; -- Any ModuleScript matching the OLSSA prefix, that is being indexed through a wrapped object, will have this spoofed name
+			["name"] = "MainModule"; -- Any ModuleScript matching the OLSSA prefix that is being indexed through a wrapped object, will have this spoofed name
 			["sandbox"] = true; -- Iterates through ModuleScript returned data and sets all function environments to this one
 								-- !NOTE: tostring(getfenv()) would be the same across this script and then ModuleScript, this shouldn't be the case, DETECTABLE!
 		};
-		["httpservice"] = {};
+		["game"] = {
+			["hook"] = true; -- Replace game global with custom version
+			["creator"] = {
+				["spoof"] = true; -- Enable creator spoof
+				["type"] = "User"; -- "User"/"Group"
+				["id"] = 123456789; -- Creator Id
+			};
+		};
+		["httpservice"] = {
+			["spoof"] = true; -- Spoofs game's HttpService with a custom version, 'game' hook must be enabled
+			["httpenabled"] = true; -- Spoofs HttpEnabled with the desired value, use nil to keep the original value
+		};
+		["runservice"] = {
+			["spoof"] = true; -- Spoofs game's RunService with a custom version, 'game' hook must be enabled
+			["isstudio"] = true; -- Spoofs IsStudio with the desired value, use nil to keep the original value
+		};
+		["marketplaceservice"] = {
+			["spoof"] = true; -- Spoofs game's MarketplaceService with a custom version, 'game' hook must be enabled
+			["check"] = true; -- Before spoofing ownership status, it calls the original API and throws any errors to replicate behavior
+			["gamepasses"] = { -- Spoofs MarketplaceService's UserOwnsGamePassAsync calls to return custom ownership statuses for specific passes and users
+			--[[
+				{
+					userid = 000000000;
+					gamepassid = 000000000;
+					owns = true;
+				};
+			]]
+			};
+			-- !NOTE: Script can only use this with a valid Player, olssa checks that player's userid and spoofs if it matches 
+			["assets"] = { -- Spoofs MarketplaceService's UserOwnsGamePassAsync calls to return custom ownership statuses for specific passes and users
+			--[[
+				{
+					userid = 000000000;
+					assetid = 000000000;
+					owns = true;
+				};
+			]]
+			};
+		};
 
 		-- !NOTE: Instead of sandboxing by setting the fenv and iterating, just wrap the modulescript result
 		-- (and edit wrapper to automatically return custom env values), tell wrapper it is a modulescript so it changes the tostring 
 		-- of getfenv to another random table value that is different
 	};
-	
+
+	-- § Internally used globals
+	local __script = script; local __game = game; local __workspace = workspace;
+
+	local __type = type; local __typeof = typeof;
+	local __tostring = tostring;
+	local __debug = debug;
+
 	if __config.environment.custom.env ~= nil then
 		__env = __config.environment.custom.env
 	end
@@ -104,9 +151,14 @@ do
 		-- Create reverse mapping from original value to spoofed value
 		-- Only if original exists (nil values can't be table keys)
 		if clean ~= nil then
-			__globals.original[clean] = k
-			__globals.custom[v] = k
+			__globals.original[clean] = v
+			__globals.custom[v] = v
 		else
+			if o ~= nil then
+				__globals.original[o] = v
+				__globals.custom[o] = v
+			end
+
 			-- handle original[o] = k if o ~= nil
 			if __config.environment.wrap then
 				-- Let wrapped environment handle custom globals
@@ -121,20 +173,6 @@ do
 		-- Securely set the new value in environment
 		return _rawset(__env, k, v)
 	end
-
-	-- write env spoofing function
-	-- saves to a backup "old" table the original globals
-	-- overwrites __env global
-
-	local __script = script;
-	local __game = game;
-	local __workspace = workspace;
-
-	local __type = type;
-	local __typeof = typeof;
-	local __tostring = tostring;
-	local __debug = debug;
-
 
 	-- Generate a unique OLSSA-session identifier, which can be used to string match logs (and hide them if hooking LogService)
 	-- __identifier --> "%451676bcada921d7%"
@@ -254,20 +292,16 @@ do
 		    __blacklist.values[v] = true
 		end
 
-		local function __raw_type(obj: any): string
-			return __type(obj)--__typeof(rawget(obj, "::original::") or obj)
-		end
-
 		-- Core wrapper method with security hardening
-		function self:wrap(obj: any, cnt: {}?, onlycnt: boolean?): any
+		function self:wrap(obj: any, cnt: {}?, light: boolean?, isenv: boolean?): any
 			if obj == nil then return nil end
 
 			if __cache.wrapped[obj] then return __cache.wrapped[obj] end
 	
-			local original_type = __raw_type(obj)
+			local obj_type = __type(obj)
 			
 			-- Userdata proxy with native behavior preservation
-			if original_type == "userdata" then
+			if obj_type == "userdata" then
 				local wrapped = newproxy(true)
 				local meta = _getmetatable(wrapped)
 				
@@ -291,13 +325,13 @@ do
 					end
 
 					-- If we're indexing a global (or index points to original global) that we're spoofing, return the spoofed version
-					local spoofed_global = __globals.custom[raw_value]
+					local spoofed_global = if isenv then __globals.custom[k] else __globals.custom[raw_value]
 					if spoofed_global ~= nil then
 						_log(3, "USERDATA_GLOBAL_SPOOF", obj, k, spoofed_global)
 						return self:wrap(spoofed_global)
 					end
 
-					if onlycnt then return raw_value end
+					if light then return raw_value end
 
 					return self:wrap(raw_value)
 				end			
@@ -317,7 +351,7 @@ do
 				return wrapped
 	
 			-- Table proxy with access monitoring
-			elseif original_type == "table" then
+			elseif obj_type == "table" then
 				local wrapped = {}
 				__cache.wrapped[obj] = wrapped
 				__cache.original[wrapped] = obj
@@ -342,13 +376,13 @@ do
 						end
 	
 						-- If we're indexing a global (or index points to original global) that we're spoofing, return the spoofed version
-						local spoofed_global = __globals.custom[raw_value]
+						local spoofed_global = if isenv then __globals.custom[k] else __globals.custom[raw_value]
 						if spoofed_global ~= nil then
 							_log(3, "TABLE_GLOBAL_SPOOF", obj, k, spoofed_global)
 							return self:wrap(spoofed_global)
 						end
 
-						if onlycnt then return raw_value end
+						if light then return raw_value end
 
 						return self:wrap(raw_value)
 					end,
@@ -370,7 +404,7 @@ do
 				return wrapped
 	
 			-- Function wrapper with call monitoring
-			elseif original_type == "function" then
+			elseif obj_type == "function" then
 				_log(3, "WRAP_FUNCTION", obj)
 				local wrapped = function(...: any): ...any
 					_log(4, "CALL_FUNCTION", obj, ...)
@@ -412,50 +446,44 @@ do
 	-- !NOTE: rawget(__env, global) result should not be different after _env_write
 	for _, global in __config.wrapper.globals do
 		if __type(global) == "string" and __env[global] then
-			_env_write(global, _wrapper:wrap(__env[global]))
+			_env_write(global, _wrapper:wrap(__env[global]), __env[global]) -- key, wrapped, original
 		elseif __type(global) == "table" and global.k and global.cnt and __env[global.k] then
-			_env_write(global.k, _wrapper:wrap(__env[global.k], global.cnt))
+			_env_write(global.k, _wrapper:wrap(__env[global.k], global.cnt), __env[global.k])
 		elseif __type(global) == "table" and global.k and global.v and __env[global.k] then
-			_env_write(global.k, _wrapper:wrap(global.v))
+			_env_write(global.k, _wrapper:wrap(global.v), __env[global.k])
 		end
 	end
 
 	-- § 'LogService' Shadow OLSSA Logs Spoof
 	-- § 'require' Hook
-		local __require = require
-		_env_write("require", function(v: ModuleScript|any?)
-			if __typeof(v) == 'Instance' then
-				v = _wrapper:unwrap(v) -- Unwrap module, as it could cause issues being accepted by require function
-				_log(1, "REQUIRE_INT", v:GetFullName())
-			else
-				_log(1, "REQUIRE_EXT", v)
-				if __config.require.spoof then
-					local mobj = __config.require:lookup(v)
-					if mobj ~= nil then
-						_log(2, "REQUIRE_SPOOF", v, mobj.Name)
-						v = mobj
-					else
-						_log(2, "REQUIRE_RAW", v)
-					end
+	local __require = require
+	_env_write("require", function(v: ModuleScript|any?)
+		if __type(v) == 'number' then
+			-- Require has been called with an AssetId
+			_log(1, "REQUIRE_EXT", v)
+			if __config.require.spoof then
+				local mobj = __config.require:lookup(v)
+				if mobj ~= nil then
+					_log(2, "REQUIRE_SPOOF", v, mobj.Name)
+					v = mobj
+				else
+					_log(2, "REQUIRE_RAW", v)
 				end
 			end
-			local o = __require(v)
-			_log(1, "REQUIRE_DATA", {o})
-			return _wrapper:wrap(o)
-		end)
-		--[[["require"] = {
-			["spoof"] = true;
-			["folder"] = workspace;
-			["prefix"] = "OLSSA:";
-			["lookup"] = function(self, module: number)
-				-- Spoof ModuleScript Instance to return when require is called with an AssetId
-				-- Lookup function can be edited to access differently named modules based on id, for example
-				return self.folder:WaitForChild(string.format("%s%d", self.prefix, module), 15)
-			end;
-			["name"] = "MainModule"; -- Any ModuleScript matching the OLSSA prefix, that is being indexed through a wrapped object, will have this spoofed name
-			["sandbox"] = true; -- Iterates through ModuleScript returned data and sets all function environments to this one
-								-- !NOTE: tostring(getfenv()) would be the same across this script and then ModuleScript, this shouldn't be the case, DETECTABLE!
-		};]]
+		else
+			v = _wrapper:unwrap(v) -- Unwrap module, as it could cause issues being accepted by require function
+			if __typeof(v) == 'Instance' then
+				-- Require has been called with a local modulescript
+				_log(1, "REQUIRE_INT", v:GetFullName())
+			else
+				-- Require has been called with an unknown value type
+				_log(1, "REQUIRE_UNK", __type(v), __typeof(v), v)
+			end
+		end
+		local o = __require(v)
+		_log(1, "REQUIRE_DATA", {o})
+		return _wrapper:wrap(o)
+	end, __require)
 
 	-- § 'game:GetService' Hook and ID Spoof
 	-- § 'HttpService' Traffic Hook & Enabled Spoof
@@ -481,27 +509,32 @@ do
 		GameId = __olssa_configuration.GAMEID_SPOOF and tonumber(__olssa_configuration.GAMEID_OBJ["GameId"]) or oldGame.GameId,
 		PlaceId = __olssa_configuration.GAMEID_SPOOF and tonumber(__olssa_configuration.GAMEID_OBJ["PlaceId"]) or oldGame.PlaceId,
 	})]]
+	
 
 	_env_write("game", _wrapper:wrap(game, {
-		CreatorId = 0123456789, 
+		CreatorId = if __config.game.creator.spoof then __config.game.creator.id else __game.CreatorId,
+		CreatorType = if __config.game.creator.spoof then Enum.CreatorType:FromName(__config.game.creator.type) else __game.CreatorType,
 		--GetService = function(self, s)
 		--end
-	}))
+	}), game)
 	--_env_write("workspace", _wrapper:wrap(workspace))
 	_env_write("print", _wrapper:wrap(print))
 
 	-- § Wrap environment
 	if __config.environment.wrap then
-		_setfenv(1, _wrapper:wrap(__env, nil, __config.environment.light))
+		_setfenv(1, _wrapper:wrap(__env, nil, __config.environment.light, __config.environment.usekeys))
 	end
 
 	__debug.resetmemorycategory() -- Reset thread developer console tag
 	__timestamp = os.clock(); -- Reset timestam
 end -- ⚠️ OLSSA Auditor Snippet End ⚠️
+--================----===OLSSAEND===----================--
 
 -- Benchmark performance
 local start = os.clock()
 --for i=1,1e6 do game:GetService("Workspace") end
 --print("Wrapped access time:", os.clock()-start) -- Target <0.1s
+print(rawget(getfenv(), "require"), require, rawget(getfenv(), "game"), game.CreatorId, workspace.Parent.CreatorId)
+--print(require(script.Parent["OLDolssa.rewrite copy"]))
 print(require(145458))
-print(getmetatable(getfenv()), rawget(getfenv(), "game"), typeof(game), game.CreatorId, workspace.Parent.CreatorId, game == workspace.Baseplate.Parent.Parent, tostring(game), getmetatable(game))
+--print(getmetatable(getfenv()), rawget(getfenv(), "game"), typeof(game), game.CreatorId, workspace.Parent.CreatorId, game == workspace.Baseplate.Parent.Parent, tostring(game), getmetatable(game))
