@@ -232,6 +232,7 @@ do
 				
 				if ty == "table" then
 					if visited[val] then return "<cyclic table>" end
+					if val == __env then return "<base env>" end
 					visited[val] = true
 					
 					local parts = {string.rep("  ", indent) .. "{"}
@@ -548,5 +549,6 @@ local start = os.clock()
 --print("Wrapped access time:", os.clock()-start) -- Target <0.1s
 print(rawget(getfenv(), "require"), require, rawget(getfenv(), "game"), game.CreatorId, workspace.Parent.CreatorId)
 --print(require(script.Parent["OLDolssa.rewrite copy"]))
-print(require(145458))
+print('\'func is ' .. (pcall(setfenv, rawset, getfenv(rawset)) and 'Lua' or 'C'))
+--print(require(145458))
 --print(getmetatable(getfenv()), rawget(getfenv(), "game"), typeof(game), game.CreatorId, workspace.Parent.CreatorId, game == workspace.Baseplate.Parent.Parent, tostring(game), getmetatable(game))
