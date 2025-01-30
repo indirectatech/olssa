@@ -83,7 +83,7 @@ do
 				-- Lookup function can be edited to access differently named modules based on id or for other use cases
 				return self.folder:WaitForChild(string.format("%s%d", self.prefix, module), 15)
 			end;
-			["name"] = "MainModule"; -- Any ModuleScript matching the OLSSA prefix that is being indexed through a wrapped object, will have this spoofed name
+			["mock"] = true; -- Any ModuleScript matching the OLSSA prefix that is being indexed through a wrapped object, will have a mock "MainModule" name and required_asset model hierarchy
 			["sandbox"] = true; -- Iterates through ModuleScript returned data and sets all function environments to this one
 								-- !NOTE: tostring(getfenv()) would be the same across this script and then ModuleScript, this shouldn't be the case, DETECTABLE!
 		};
@@ -474,6 +474,18 @@ do
 				local mobj = __config.require:lookup(v)
 				if mobj ~= nil then
 					_log(2, "REQUIRE_SPOOF", v, mobj.Name)
+					-- emulate external require call stack?
+					-- replicate mainmodule hierarchy: nil --> Model required_asset_{v} --> ModuleScript MainModule
+					-- clone mobj? rename it MainModule and put inside required asset module?
+					-- add to a lookup table for wrapper so that when mainmodule name or parent is indexed pass correct info
+					if __config.require.mock then
+						local model = Instance.new("Model")
+						model.Parent = nil; -- model gets garbage collected, try wrapping instead of this
+						model.Name = string.format("required_asset_%d", v)
+						mobj = mobj:Clone();
+						mobj.Parent = model;
+						mobj.Name = "MainModule";
+					end
 					v = mobj
 				else
 					_log(2, "REQUIRE_RAW", v)
@@ -552,3 +564,4 @@ print(rawget(getfenv(), "require"), require, rawget(getfenv(), "game"), game.Cre
 print('\'func is ' .. (pcall(setfenv, rawset, getfenv(rawset)) and 'Lua' or 'C'))
 --print(require(145458))
 --print(getmetatable(getfenv()), rawget(getfenv(), "game"), typeof(game), game.CreatorId, workspace.Parent.CreatorId, game == workspace.Baseplate.Parent.Parent, tostring(game), getmetatable(game))
+print(require(105081681698631))

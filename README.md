@@ -1,3 +1,5 @@
+> [!WARNING]  
+> The main OLSSA script is currently being refactored, please use the original `olssa.v3.alpha.server.lua` for the time being
 # 🐧 OLSSA
 ## Obfuscated Luau Script Security Auditor by Indirecta
 
