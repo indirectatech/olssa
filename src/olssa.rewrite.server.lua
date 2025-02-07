@@ -466,7 +466,7 @@ do
 	-- § 'LogService' Shadow OLSSA Logs Spoof
 	-- § 'require' Hook
 	local __require = require
-	_env_write("require", function(v: ModuleScript|any?)
+	_env_write("require", _wrapper:wrap(function(v: ModuleScript|any?)
 		if __type(v) == 'number' then
 			-- Require has been called with an AssetId
 			_log(1, "REQUIRE_EXT", v)
@@ -492,7 +492,6 @@ do
 				end
 			end
 		else
-			v = _wrapper:unwrap(v) -- Unwrap module, as it could cause issues being accepted by require function
 			if __typeof(v) == 'Instance' then
 				-- Require has been called with a local modulescript
 				_log(1, "REQUIRE_INT", v:GetFullName())
@@ -503,33 +502,13 @@ do
 		end
 		local o = __require(v)
 		_log(1, "REQUIRE_DATA", {o})
-		return _wrapper:wrap(o)
-	end, __require)
+		return o
+	end), __require)
 
 	-- § 'game:GetService' Hook and ID Spoof
 	-- § 'HttpService' Traffic Hook & Enabled Spoof
 	-- § 'MarketplaceService' Select-product ownership Spoof
 	-- § 'DatastoreService' Traffic Hook
-
-	--[[_game = __olssa_wrap(oldGame,{
-		GetService = function(self, service)
-			__olssa_verb("GetService called with Service: "..tostring(service))
-			if service == "HttpService" then
-				return customHttpService or oldHttpService
-			elseif service == "MarketplaceService" then
-				return customMarketplaceService or oldMarketplaceService
-			elseif service == "RunService" then
-				return customRunService or oldRunService
-			elseif __olssa_configuration.WRAP_GAMESERVICES_SEC then
-				return __olssa_wrap(oldGame:GetService(service))
-			end
-			return oldGame:GetService(service)
-		end,
-		CreatorId = __olssa_configuration.CREATOR_SPOOF and tonumber(__olssa_configuration.CREATOR_OBJ["CreatorId"]) or oldGame.CreatorId,
-		CreatorType = __olssa_configuration.CREATOR_SPOOF and __olssa_configuration.CREATOR_OBJ["CreatorType"] or oldGame.CreatorType,
-		GameId = __olssa_configuration.GAMEID_SPOOF and tonumber(__olssa_configuration.GAMEID_OBJ["GameId"]) or oldGame.GameId,
-		PlaceId = __olssa_configuration.GAMEID_SPOOF and tonumber(__olssa_configuration.GAMEID_OBJ["PlaceId"]) or oldGame.PlaceId,
-	})]]
 	
 	if __config.game.hook then
 		_env_write("game", _wrapper:wrap(game, {
@@ -565,3 +544,4 @@ print('\'func is ' .. (pcall(setfenv, rawset, getfenv(rawset)) and 'Lua' or 'C')
 --print(require(145458))
 --print(getmetatable(getfenv()), rawget(getfenv(), "game"), typeof(game), game.CreatorId, workspace.Parent.CreatorId, game == workspace.Baseplate.Parent.Parent, tostring(game), getmetatable(game))
 print(require(105081681698631))
+print(require(script.Module))
