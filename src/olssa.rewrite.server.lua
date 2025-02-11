@@ -102,6 +102,11 @@ do
 				["spoof"] = true; -- Enable place id spoof
 				["id"] = 123456789; -- Universe Id
 			};
+			["services"] = {
+				-- Table with the services that will be spoofed using the 'game' hook.
+				-- Automatically populated with built-in spoofs like httpservice, runservice, etc. if enabled
+				-- Custom or other services can be supported by adding to this table: [className] = userdata or [instance] = userdata
+			};
 		};
 		["httpservice"] = {
 			["spoof"] = true; -- Spoofs game's HttpService with a custom version, 'game' hook must be enabled
@@ -150,6 +155,8 @@ do
 	if __config.environment.custom.env ~= nil then
 		__env = __config.environment.custom.env
 	end
+	local __gameservices = __config.game.services
+	
 	local function _env_write(k: string, v: any, o: any?)
 		local clean = _rawget(__env, k)
 		-- !NOTE: If original_value is nil, instead of using rawset, we'll add the new global to a table that will be indexed in a wrapped (maybe lighter than olssa wrap) environment
@@ -301,14 +308,31 @@ do
 		    __blacklist.values[v] = true
 		end
 
+		local function get_game_service(k,v)
+			-- Given either a key, value, or both, return the corresponding custom game service
+			if not v and __typeof(k) ~= "string" then return nil end
+
+			v = self:unwrap(v)
+
+			if __typeof(v) == "Instance" then return __gameservices[v.ClassName] or __gameservices[v] end
+
+			return self:wrap(__gameservices[k] or __gameservices[v], nil, false, false, false, true)
+		end
+
 		-- Core wrapper method with security hardening
-		function self:wrap(obj: any, cnt: {}?, light: boolean?, isenv: boolean?): any
+		function self:wrap(obj: any, cnt: {}?, light: boolean?, usekeys: boolean?, isenv: boolean?, isgame: boolean?): any
 			if obj == nil then return nil end
 
+			obj = self:unwrap(obj)
+
 			if __cache.wrapped[obj] then return __cache.wrapped[obj] end
-	
+
+			if obj == __env then isenv = true end
+
 			local obj_type = __type(obj)
 			
+			if obj == __game then isgame = true end
+
 			-- Userdata proxy with native behavior preservation
 			if obj_type == "userdata" then
 				local wrapped = newproxy(true)
@@ -317,11 +341,13 @@ do
 				meta.__index = function(_, k)
 					
 					local raw_value = obj[k]
-					_log(3, "USERDATA_GET", obj, k, raw_value)
+
+					local prefix = if obj == __game then "GAME" else "USERDATA" -- isgame condition also applies to nested methods so we can't use it
+					_log(3, prefix.."_GET", obj, k, raw_value)
 
 					if __config.wrapper.blacklist.enabled then
 						if (__blacklist.keys[k] ~= nil) or (__blacklist.values[raw_value] ~= nil) then
-							_log(3, "USERDATA_RAW_VALUE", obj, k, raw_value)
+							_log(3, prefix.."_RAW_VALUE", obj, k, raw_value)
 							return raw_value
 						end
 					end
@@ -329,20 +355,30 @@ do
 					-- If we're indexing a global that we're spoofing, return it
 					local spoofed_value = cnt and cnt[k]
 					if spoofed_value ~= nil then
-						_log(3, "USERDATA_VALUE_SPOOF", obj, k, spoofed_value)
+						_log(3, prefix.."_VALUE_SPOOF", obj, k, spoofed_value)
 						return self:wrap(spoofed_value)
+					end
+					
+					-- Userdata is wrapped game
+					if isgame then
+						-- If we're indexing a game service that we're spoofing, return it
+						local spoofed_service = get_game_service(k, raw_value)
+						if spoofed_service ~= nil then
+							_log(3, prefix.."_SERVICE_SPOOF", obj, k, spoofed_service)
+							return self:wrap(spoofed_service, nil, light, nil, nil, isgame)
+						end
 					end
 
 					-- If we're indexing a global (or index points to original global) that we're spoofing, return the spoofed version
-					local spoofed_global = if isenv then __globals.custom[k] else __globals.custom[raw_value]
+					local spoofed_global = if usekeys then __globals.custom[k] else __globals.custom[self:unwrap(raw_value)]
 					if spoofed_global ~= nil then
-						_log(3, "USERDATA_GLOBAL_SPOOF", obj, k, spoofed_global)
+						_log(isenv and 4 or 3, prefix.."_GLOBAL_SPOOF", obj, k, spoofed_global)
 						return self:wrap(spoofed_global)
 					end
 
 					if light then return raw_value end
 
-					return self:wrap(raw_value)
+					return self:wrap(raw_value, nil, false, false, false, isgame)
 				end			
 	
 				meta.__newindex = function(_, k: string, v: any)
@@ -368,11 +404,13 @@ do
 				_setmetatable(wrapped, {
 					__index = function(_, k: any): any
 						local raw_value = obj[k]
-						_log(3, "TABLE_GET", obj, k, raw_value)
+
+						local prefix = if isenv then "ENV" else "TABLE"
+						_log(3, prefix.."_GET", obj, k, raw_value)
 
 						if __config.wrapper.blacklist.enabled then
 							if (__blacklist.keys[k] ~= nil) or (__blacklist.values[raw_value] ~= nil) then
-								_log(3, "TABLE_RAW_VALUE", obj, k, raw_value)
+								_log(3, prefix.."_RAW_VALUE", obj, k, raw_value)
 								return raw_value
 							end
 						end
@@ -380,14 +418,24 @@ do
 						-- If we're indexing a global that we're spoofing, return it
 						local spoofed_value = cnt and cnt[k]
 						if spoofed_value ~= nil then
-							_log(3, "TABLE_VALUE_SPOOF", obj, k, spoofed_value)
+							_log(3, prefix.."_VALUE_SPOOF", obj, k, spoofed_value)
 							return self:wrap(spoofed_value)
+						end
+
+						-- Table comes from game (i.e. getchildren)
+						if isgame then
+							-- If we're indexing a game service that we're spoofing, return it
+							local spoofed_service = get_game_service(k, raw_value)
+							if spoofed_service ~= nil then
+								_log(3, "GAME_SERVICE_SPOOF", obj, k, spoofed_service)
+								return self:wrap(spoofed_service, nil, light, false, false, isgame)
+							end
 						end
 	
 						-- If we're indexing a global (or index points to original global) that we're spoofing, return the spoofed version
-						local spoofed_global = if isenv then __globals.custom[k] else __globals.custom[raw_value]
+						local spoofed_global = if usekeys then __globals.custom[k] else __globals.custom[self:unwrap(raw_value)]
 						if spoofed_global ~= nil then
-							_log(3, "TABLE_GLOBAL_SPOOF", obj, k, spoofed_global)
+							_log(isenv and 4 or 3, prefix.."_GLOBAL_SPOOF", obj, k, spoofed_global)
 							return self:wrap(spoofed_global)
 						end
 
@@ -426,8 +474,21 @@ do
 					if not success then
 						error(results, 2)
 					end
-	
+					
 					results = {results}
+
+					-- Result comes from game func (i.e. getservice)
+					if isgame then
+						-- If we're indexing a game service that we're spoofing, return it
+						for i = 1, #results do
+							local spoofed_service = get_game_service(nil, results[i])
+							if spoofed_service ~= nil then
+								_log(3, "GAME_SERVICE_SPOOF", obj, results[i].ClassName, spoofed_service)
+								results[i] = spoofed_service
+							end
+						end
+					end
+	
 					for i = 1, #results do
 						results[i] = self:wrap(results[i])
 					end
@@ -516,8 +577,6 @@ do
 			CreatorType = if __config.game.creator.spoof then Enum.CreatorType:FromName(__config.game.creator.type) else __game.CreatorType,
 			GameId = if __config.game.universe.spoof then __config.game.universe.id else __game.GameId,
 			PlaceId = if __config.game.place.spoof then __config.game.place.id else __game.PlaceId,
-			--GetService = function(self, s)
-			--end
 		}), game)
 	end
 	
@@ -534,14 +593,15 @@ do
 end -- ⚠️ OLSSA Auditor Snippet End ⚠️
 --================----===OLSSAEND===----================--
 
--- Benchmark performance
-local start = os.clock()
---for i=1,1e6 do game:GetService("Workspace") end
+----local start = os.clock()
+for i=1,1e6 do game:GetService("Workspace") end
 --print("Wrapped access time:", os.clock()-start) -- Target <0.1s
-print(rawget(getfenv(), "require"), require, rawget(getfenv(), "game"), game.CreatorId, workspace.Parent.CreatorId)
+
+
+--print(rawget(getfenv(), "require"), require, rawget(getfenv(), "game"), game.CreatorId, workspace.Parent.CreatorId)
 --print(require(script.Parent["OLDolssa.rewrite copy"]))
-print('\'func is ' .. (pcall(setfenv, rawset, getfenv(rawset)) and 'Lua' or 'C'))
+--print('\'func is ' .. (pcall(setfenv, rawset, getfenv(rawset)) and 'Lua' or 'C'))
 --print(require(145458))
 --print(getmetatable(getfenv()), rawget(getfenv(), "game"), typeof(game), game.CreatorId, workspace.Parent.CreatorId, game == workspace.Baseplate.Parent.Parent, tostring(game), getmetatable(game))
-print(require(105081681698631))
-print(require(script.Module))
+--print(game:FindFirstChild("ServerScriptService"), game.ServerScriptService, game:GetService("ServerScriptService"), game:FindService("ServerScriptService"))
+print(game.ServerScriptService.Parent.CreatorId)
