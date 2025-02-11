@@ -597,5 +597,3 @@ do
 
 	debug.resetmemorycategory()
 end -- ⚠️ OLSSA Auditor Snippet End ⚠️
-
-print(game.HttpService == game:GetService("HttpService"))
