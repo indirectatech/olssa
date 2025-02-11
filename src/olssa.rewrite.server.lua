@@ -332,17 +332,16 @@ do
 			local obj_type = __type(obj)
 			
 			if obj == __game then isgame = true end
+			local prefix = if isenv then "ENV" else (if obj == __game then "GAME" else string.upper(obj_type)) -- isgame condition also applies to nested methods so we can't use it
 
 			-- Userdata proxy with native behavior preservation
 			if obj_type == "userdata" then
 				local wrapped = newproxy(true)
 				local meta = _getmetatable(wrapped)
-				
 				meta.__index = function(_, k)
 					
 					local raw_value = obj[k]
 
-					local prefix = if obj == __game then "GAME" else "USERDATA" -- isgame condition also applies to nested methods so we can't use it
 					_log(3, prefix.."_GET", obj, k, raw_value)
 
 					if __config.wrapper.blacklist.enabled then
@@ -382,7 +381,7 @@ do
 				end			
 	
 				meta.__newindex = function(_, k: string, v: any)
-					_log(3, "USERDATA_SET", obj, k, v)
+					_log(3, prefix.."_SET", obj, k, v)
 					obj[k] = self:unwrap(v)
 				end
 	
@@ -445,7 +444,7 @@ do
 					end,
 					
 					__newindex = function(_, k: any, v: any)
-						_log(3, "TABLE_SET", obj, k)
+						_log(3, prefix.."_SET", obj, k)
 						obj[k] = self:unwrap(v)
 					end,
 					
@@ -456,13 +455,19 @@ do
 							init = k
 							return self:wrap(k), self:wrap(v)
 						end
-					end
+					end,
+
+					__tostring = function()
+						return tostring(obj)
+					end,
+
+					__metatable = _getmetatable(obj)
 				})
 				return wrapped
 	
 			-- Function wrapper with call monitoring
 			elseif obj_type == "function" then
-				_log(3, "WRAP_FUNCTION", obj)
+				_log(4, "WRAP_FUNCTION", obj)
 				local wrapped = function(...: any): ...any
 					_log(4, "CALL_FUNCTION", obj, ...)
 					local args = {...}
@@ -594,7 +599,7 @@ end -- ⚠️ OLSSA Auditor Snippet End ⚠️
 --================----===OLSSAEND===----================--
 
 ----local start = os.clock()
-for i=1,1e6 do game:GetService("Workspace") end
+--for i=1,1e6 do game:GetService("Workspace") end
 --print("Wrapped access time:", os.clock()-start) -- Target <0.1s
 
 
@@ -602,6 +607,6 @@ for i=1,1e6 do game:GetService("Workspace") end
 --print(require(script.Parent["OLDolssa.rewrite copy"]))
 --print('\'func is ' .. (pcall(setfenv, rawset, getfenv(rawset)) and 'Lua' or 'C'))
 --print(require(145458))
---print(getmetatable(getfenv()), rawget(getfenv(), "game"), typeof(game), game.CreatorId, workspace.Parent.CreatorId, game == workspace.Baseplate.Parent.Parent, tostring(game), getmetatable(game))
---print(game:FindFirstChild("ServerScriptService"), game.ServerScriptService, game:GetService("ServerScriptService"), game:FindService("ServerScriptService"))
+print(getmetatable(getfenv()), rawget(getfenv(), "game"), typeof(game), game.CreatorId, workspace.Parent.CreatorId, game == workspace.Baseplate.Parent.Parent, tostring(game), getmetatable(game))
+print(game:FindFirstChild("ServerScriptService"), game.ServerScriptService, game:GetService("ServerScriptService"), game:FindService("ServerScriptService"))
 print(game.ServerScriptService.Parent.CreatorId)
