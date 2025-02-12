@@ -173,6 +173,7 @@ do
 	local __task = task
 	local __task_wait = task.wait
 	local __task_delay = task.delay
+	local __task_spawn = task.spawn
 	local __DateTime = DateTime
 
 	if __config.environment.custom.env ~= nil then
@@ -227,106 +228,144 @@ do
 	__debug.setmemorycategory(string.format("%s - OLSSA %s %s", __script.Name, __config.meta.revision, __identifier))
 
 	-- § Logging
-	local _log = __config.logs.verbose > 0
-			and function(level: number, ...: any)
-				if level > __config.logs.verbose then
-					return
-				end
-				if math.sign(__timestamp) ~= 1 and not __config.logs.prelogs then
-					return
-				end
-				local function processStackTrace(trace: string): string
-					local stack = {}
-					local traceLines = trace:split("\n")
+	-- § Logging
+	local RunService = game:GetService("RunService")
+	local logQueue = {}
+	local queueConnection = nil
 
-					for i = #traceLines, 1, -1 do
-						local line = traceLines[i]:gsub("^%s+", ""):gsub("%s+$", "")
-						if line == "" then
-							continue
-						end
+	-- Processing function moved outside for reuse
+	local function processStackTrace(trace)
+		local stack = {}
+		local traceLines = trace:split("\n")
 
-						local fullname, number, _ = line:match("^(.+):(%d+)")
-						local _, _, func = line:match("^(.+):(%d+)%sfunction%s(.+)$")
-
-						if not number then
-							continue
-						end
-
-						local name = fullname and _select(1, fullname:gsub(__script:GetFullName(), "(script)"))
-							or "(main)" --fullname:match("[^%.]+$") or "Unknown"
-						local entry = func and string.format("%s.%s:%s", name, func, number)
-							or string.format("%s:%s", name, number)
-
-						table.insert(stack, entry)
-					end
-
-					return "| Stack Begin >  " .. table.concat(stack, " → ") .. "  < Stack End |"
-				end
-
-				local timestamp = math.sign(__timestamp) * math.round((__os_clock() - math.abs(__timestamp)) * 1000)
-				local header = string.format("[OLSSA] %s (l%d %dms)", __script:GetFullName(), level, timestamp)
-				local content = table.concat(
-					(function(args)
-						local function __dump(val, indent, visited)
-							indent = indent or 0
-							visited = visited or {}
-							local ty = __type(val)
-
-							if ty == "table" then
-								if visited[val] then
-									return "<cyclic table>"
-								end
-								if val == __env then
-									return "<base env>"
-								end
-								visited[val] = true
-
-								local parts = { string.rep("  ", indent) .. "{" }
-								for k, v in pairs(val) do
-									local keyStr = __tostring(k)
-									local valueStr = __dump(v, indent + 1, visited)
-									table.insert(
-										parts,
-										string.rep("  ", indent + 1) .. "|→ " .. keyStr .. ": " .. valueStr
-									)
-								end
-								table.insert(parts, string.rep("  ", indent) .. "}")
-								return table.concat(parts, "\n")
-							elseif ty == "function" then
-								local name = __debug.info(val, "n") or "anon"
-								local nargs, variadic = __debug.info(val, "a")
-								local addr = tostring(val):match("(0x%x+)$") or "0x----"
-								return string.format("ƒ[%s](%d%s) @%s", name, nargs, variadic and "+" or "", addr)
-							elseif ty == "string" then
-								return string.format("%q", val)
-							else
-								return tostring(val)
-							end
-						end
-
-						local dump = {}
-						for i, v in ipairs(args) do
-							dump[i] = if __config.logs.verbose >= 4 then __dump(v, 0, {}) else __tostring(v)
-						end
-						return dump
-					end)({ ... }),
-					", "
-				)
-
-				if __config.logs.whitelist and not string.match(content, __config.logs.whitelist) then
-					return
-				end
-
-				if __config.logs.blacklist and string.match(content, __config.logs.blacklist) then
-					return
-				end
-
-				local stacktrace = processStackTrace(__debug.traceback())
-				local indent = string.rep(" ", 16) -- Padding for Roblox Output Console timestamp
-
-				return warn(table.concat({ header, content, __identifier }, " :: "), "\n" .. indent .. stacktrace)
+		for i = #traceLines, 1, -1 do
+			local line = traceLines[i]:gsub("^%s+", ""):gsub("%s+$", "")
+			if line == "" then
+				continue
 			end
-		or function(...) end
+
+			local fullname, number = line:match("^(.+):(%d+)")
+			local func = line:match("function%s(.+)$")
+
+			if not number then
+				continue
+			end
+
+			local name = fullname and fullname:gsub(__script:GetFullName(), "(script)") or "(main)"
+			local entry = func and string.format("%s.%s:%s", name, func, number)
+				or string.format("%s:%s", name, number)
+
+			table.insert(stack, entry)
+		end
+
+		return "| Stack Begin >  " .. table.concat(stack, " → ") .. "  < Stack End |"
+	end
+
+	local function processJob(job)
+		-- Process arguments with dumping
+		local dump = {}
+		for i, v in ipairs(job.args) do
+			if __config.logs.verbose >= 4 then
+				local function __dump(val, indent, visited)
+					-- Original dump implementation
+					indent = indent or 0
+					visited = visited or {}
+					local ty = type(val)
+
+					if ty == "table" then
+						if visited[val] then return "<cyclic table>" end
+						if val == getfenv() then return "<base env>" end
+						visited[val] = true
+
+						local parts = { string.rep("  ", indent) .. "{" }
+						for k, v in pairs(val) do
+							local keyStr = tostring(k)
+							local valueStr = __dump(v, indent + 1, visited)
+							table.insert(
+								parts,
+								string.rep("  ", indent + 1) .. "|→ " .. keyStr .. ": " .. valueStr
+							)
+						end
+						table.insert(parts, string.rep("  ", indent) .. "}")
+						return table.concat(parts, "\n")
+					elseif ty == "function" then
+						local name = debug.info(v, "n") or "anon"
+						local nargs = debug.info(v, "a")
+						local addr = tostring(v):match("(0x%x+)$") or "0x----"
+						return string.format("ƒ[%s](%d) @%s", name, nargs, addr)
+					elseif ty == "string" then
+						return string.format("%q", val)
+					else
+						return tostring(val)
+					end
+				end
+				dump[i] = __dump(v, 0, {})
+			else
+				dump[i] = tostring(v)
+			end
+		end
+
+		local content = table.concat(dump, ", ")
+
+		-- Content filtering
+		if __config.logs.whitelist and not content:match(__config.logs.whitelist) then
+			return
+		end
+		if __config.logs.blacklist and content:match(__config.logs.blacklist) then
+			return
+		end
+
+		-- Final output
+		local message = table.concat({ job.header, content, __identifier }, " :: ")
+		local indent = string.rep(" ", 16)
+		warn(message, "\n" .. indent .. job.stacktrace)
+	end
+
+	local function onHeartbeat()
+		local start = os.clock()
+		while #logQueue > 0 and (os.clock() - start) < 0.016 do -- 16ms budget
+			processJob(table.remove(logQueue, 1))
+		end
+		if #logQueue == 0 and queueConnection then
+			queueConnection:Disconnect()
+			queueConnection = nil
+		end
+	end
+
+	local function enqueueJob(job)
+		table.insert(logQueue, job)
+		if not queueConnection then
+			queueConnection = RunService.Heartbeat:Connect(onHeartbeat)
+		end
+	end
+
+	local _log = __config.logs.verbose > 0
+		and function(level: number, ...: any)
+			if level > __config.logs.verbose then return end
+			if math.sign(__timestamp) ~= 1 and not __config.logs.prelogs then return end
+
+			-- Capture time-sensitive data first
+			local timestamp = math.sign(__timestamp) * math.round((os.clock() - math.abs(__timestamp)) * 1000)
+			local header = ("[OLSSA] %s (l%d %dms)"):format(
+				__script:GetFullName(),
+				level,
+				timestamp
+			)
+			local trace = processStackTrace(debug.traceback())
+
+			enqueueJob({
+				level = level,
+				header = header,
+				args = { ... },
+				stacktrace = trace,
+				timestamp = timestamp
+			})
+		end
+		or function() end
+
+	local function _async_log(...)
+		return _log(...)--task.spawn(_log, ...)
+	end
 
 	-- § Wrapper
 	local _wrapper = (function()
@@ -405,11 +444,11 @@ do
 				meta.__index = function(_, k)
 					local raw_value = obj[k]
 
-					_log(3, prefix .. "_GET", obj, k, raw_value)
+					_async_log(3, prefix .. "_GET", obj, k, raw_value)
 
 					if __config.wrapper.blacklist.enabled then
 						if (__blacklist.keys[k] ~= nil) or (__blacklist.values[raw_value] ~= nil) then
-							_log(3, prefix .. "_RAW_VALUE", obj, k, raw_value)
+							_async_log(3, prefix .. "_RAW_VALUE", obj, k, raw_value)
 							return raw_value
 						end
 					end
@@ -417,7 +456,7 @@ do
 					-- If we're indexing a global that we're spoofing, return it
 					local spoofed_value = cnt and cnt[k]
 					if spoofed_value ~= nil then
-						_log(3, prefix .. "_VALUE_SPOOF", obj, k, spoofed_value)
+						_async_log(3, prefix .. "_VALUE_SPOOF", obj, k, spoofed_value)
 						return self:wrap(spoofed_value)
 					end
 
@@ -426,7 +465,7 @@ do
 						-- If we're indexing a game service that we're spoofing, return it
 						local spoofed_service = get_game_service(k, raw_value)
 						if spoofed_service ~= nil then
-							_log(3, prefix .. "_SERVICE_SPOOF", obj, k, spoofed_service)
+							_async_log(3, prefix .. "_SERVICE_SPOOF", obj, k, spoofed_service)
 							return self:wrap(spoofed_service, nil, light, nil, nil, isgame)
 						end
 					end
@@ -436,7 +475,7 @@ do
 						then __globals.custom[k]
 						else __globals.custom[self:unwrap(raw_value)]
 					if spoofed_global ~= nil then
-						_log(isenv and 4 or 3, prefix .. "_GLOBAL_SPOOF", obj, k, spoofed_global)
+						_async_log(isenv and 4 or 3, prefix .. "_GLOBAL_SPOOF", obj, k, spoofed_global)
 						return self:wrap(spoofed_global)
 					end
 
@@ -448,7 +487,7 @@ do
 				end
 
 				meta.__newindex = function(_, k: string, v: any)
-					_log(3, prefix .. "_SET", obj, k, v)
+					_async_log(3, prefix .. "_SET", obj, k, v)
 					obj[k] = self:unwrap(v)
 				end
 
@@ -472,11 +511,11 @@ do
 						local raw_value = obj[k]
 
 						local prefix = if isenv then "ENV" else "TABLE"
-						_log(3, prefix .. "_GET", obj, k, raw_value)
+						_async_log(3, prefix .. "_GET", obj, k, raw_value)
 
 						if __config.wrapper.blacklist.enabled then
 							if (__blacklist.keys[k] ~= nil) or (__blacklist.values[raw_value] ~= nil) then
-								_log(3, prefix .. "_RAW_VALUE", obj, k, raw_value)
+								_async_log(3, prefix .. "_RAW_VALUE", obj, k, raw_value)
 								return raw_value
 							end
 						end
@@ -484,7 +523,7 @@ do
 						-- If we're indexing a global that we're spoofing, return it
 						local spoofed_value = cnt and cnt[k]
 						if spoofed_value ~= nil then
-							_log(3, prefix .. "_VALUE_SPOOF", obj, k, spoofed_value)
+							_async_log(3, prefix .. "_VALUE_SPOOF", obj, k, spoofed_value)
 							return self:wrap(spoofed_value)
 						end
 
@@ -493,7 +532,7 @@ do
 							-- If we're indexing a game service that we're spoofing, return it
 							local spoofed_service = get_game_service(k, raw_value)
 							if spoofed_service ~= nil then
-								_log(3, "GAME_SERVICE_SPOOF", obj, k, spoofed_service)
+								_async_log(3, "GAME_SERVICE_SPOOF", obj, k, spoofed_service)
 								return self:wrap(spoofed_service, nil, light, false, false, isgame)
 							end
 						end
@@ -503,7 +542,7 @@ do
 							then __globals.custom[k]
 							else __globals.custom[self:unwrap(raw_value)]
 						if spoofed_global ~= nil then
-							_log(isenv and 4 or 3, prefix .. "_GLOBAL_SPOOF", obj, k, spoofed_global)
+							_async_log(isenv and 4 or 3, prefix .. "_GLOBAL_SPOOF", obj, k, spoofed_global)
 							return self:wrap(spoofed_global)
 						end
 
@@ -515,7 +554,7 @@ do
 					end,
 
 					__newindex = function(_, k: any, v: any)
-						_log(3, prefix .. "_SET", obj, k)
+						_async_log(3, prefix .. "_SET", obj, k)
 						obj[k] = self:unwrap(v)
 					end,
 
@@ -538,9 +577,9 @@ do
 
 			-- Function wrapper with call monitoring
 			elseif obj_type == "function" then
-				_log(4, "WRAP_FUNCTION", obj)
+				_async_log(4, "WRAP_FUNCTION", obj)
 				local wrapped = function(...: any): ...any
-					_log(4, "CALL_FUNCTION", obj, ...)
+					_async_log(4, "CALL_FUNCTION", obj, ...)
 					local args = { ... }
 					for i = 1, _select("#", ...) do
 						args[i] = self:unwrap(args[i])
@@ -559,7 +598,7 @@ do
 						for i = 1, #results do
 							local spoofed_service = get_game_service(nil, results[i])
 							if spoofed_service ~= nil then
-								_log(3, "GAME_SERVICE_SPOOF", obj, results[i].ClassName, spoofed_service)
+								_async_log(3, "GAME_SERVICE_SPOOF", obj, results[i].ClassName, spoofed_service)
 								results[i] = spoofed_service
 							end
 						end
@@ -766,9 +805,9 @@ end -- ⚠️ OLSSA Auditor Snippet End ⚠️
 --================----===OLSSAEND===----================--
 
 local start = os.clock()
-for i = 1, 1e6 do
-	game:GetService("Workspace")
-end
+--for i = 1, 1e6 do
+--	game:GetService("Workspace")
+--end
 print("Wrapped access time:", os.clock() - start) -- Target <0.1s
 
 --print(rawget(getfenv(), "require"), require, rawget(getfenv(), "game"), game.CreatorId, workspace.Parent.CreatorId)
