@@ -49,7 +49,7 @@ do
 
 		["logs"] = {
 			-- 0: Mute < 1: Script Activity & Requests < 2: Spoof Actions < 3: Wrapped Object Metamethods < 4: Detailed table, function dumps
-			["verbose"] = 2,
+			["verbose"] = 0,
 			["whitelist"] = nil, -- Only output logs that match the whitelist Lua Pattern
 			["blacklist"] = nil, -- Only output logs that don't match the blacklist Lua Pattern
 			["prelogs"] = false, -- Show logs that come from OLSSA startup
@@ -90,6 +90,10 @@ do
 			["mock"] = true, -- Any ModuleScript matching the OLSSA prefix that is being indexed through a wrapped object, will have a mock "MainModule" name and required_asset model hierarchy
 			["sandbox"] = true, -- Iterates through ModuleScript returned data and sets all function environments to this one
 			-- !NOTE: tostring(getfenv()) would be the same across this script and then ModuleScript, this shouldn't be the case, DETECTABLE!
+		},
+		["time"] = {
+			["hook"] = true, -- Hook global functions like os.clock, time, tick, task.wait, wait, task.delay
+			["dilation"] = 0.15, -- Clock dilation multiplier, can be used to spoof benchmark results
 		},
 		["game"] = {
 			["hook"] = true, -- Replace game global with custom version
@@ -159,6 +163,18 @@ do
 	local __tostring = tostring
 	local __debug = debug
 
+	local __os = os
+	local __os_clock = os.clock
+	local __wait = wait
+
+	local __tick = tick
+	local __time = time
+
+	local __task = task
+	local __task_wait = task.wait
+	local __task_delay = task.delay
+	local __DateTime = DateTime
+
 	if __config.environment.custom.env ~= nil then
 		__env = __config.environment.custom.env
 	end
@@ -205,7 +221,7 @@ do
 		math.random(0, 0xFFFF),
 		math.random(0, 0xFFFF)
 	)
-	local __timestamp = -os.clock() -- Redefined later with positive timestamp, negative timetamp is then an indicator of an error in OLSSA itself
+	local __timestamp = -__os_clock() -- Redefined later with positive timestamp, negative timetamp is then an indicator of an error in OLSSA itself
 
 	-- Assigns a custom tag to the OLSSA thread in the Developer Console for memory usage analysis
 	__debug.setmemorycategory(string.format("%s - OLSSA %s %s", __script.Name, __config.meta.revision, __identifier))
@@ -247,7 +263,7 @@ do
 					return "| Stack Begin >  " .. table.concat(stack, " → ") .. "  < Stack End |"
 				end
 
-				local timestamp = math.sign(__timestamp) * math.round((os.clock() - math.abs(__timestamp)) * 1000)
+				local timestamp = math.sign(__timestamp) * math.round((__os_clock() - math.abs(__timestamp)) * 1000)
 				local header = string.format("[OLSSA] %s (l%d %dms)", __script:GetFullName(), level, timestamp)
 				local content = table.concat(
 					(function(args)
@@ -637,7 +653,7 @@ do
 	if __config.game.hook then
 		_env_write(
 			"game",
-			_wrapper:wrap(game, {
+			_wrapper:wrap(__game, {
 				CreatorId = if __config.game.creator.spoof then __config.game.creator.id else __game.CreatorId,
 				CreatorType = if __config.game.creator.spoof
 					then Enum.CreatorType:FromName(__config.game.creator.type)
@@ -645,10 +661,97 @@ do
 				GameId = if __config.game.universe.spoof then __config.game.universe.id else __game.GameId,
 				PlaceId = if __config.game.place.spoof then __config.game.place.id else __game.PlaceId,
 			}),
-			game
+			__game
 		)
 	end
 
+	-- § OS Clock, Tick, Time Compression
+	if __config.time.hook then
+		do
+			-- Save original timing functions
+			-- Internal state for os.clock spoofing
+			local fakeTime: number = __os_clock()
+			local lastReal: number = __os_clock()
+
+			_env_write(
+				"os",
+				_wrapper:wrap(__os, {
+					["clock"] = function(): number
+						local now: number = __os_clock()
+						local dt: number = now - lastReal
+						fakeTime = fakeTime + dt * __config.time.dilation
+						lastReal = now
+						return fakeTime
+					end,
+				}),
+				__os
+			)
+
+			_env_write("wait", function(...: any): any
+				local ret = __wait(...)
+				local now: number = __os_clock()
+				fakeTime = math.max(fakeTime, now)
+				lastReal = now
+				return ret
+			end, __wait)
+
+			_env_write(
+				"task",
+				_wrapper:wrap(__task, {
+					["wait"] = function(...: any): any
+						local ret = __task_wait(...)
+						local now: number = __os_clock()
+						fakeTime = math.max(fakeTime, now)
+						lastReal = now
+						return ret
+					end,
+					["delay"] = function(delay: number, callback: (...any) -> (), ...: any): ()
+						local args: { any } = { ... }
+						local function wrappedCallback(...: any)
+							local now: number = __os_clock()
+							fakeTime = math.max(fakeTime, now)
+							lastReal = now
+							callback(...)
+						end
+						return __task_delay(delay, wrappedCallback, table.unpack(args))
+					end,
+				}),
+				__task
+			)
+		end
+		do
+			-- Internal state for tick spoofing.
+			local fakeTickTime: number = __tick()
+			local lastRealTick: number = __tick()
+
+			--- Fake tick that returns a dilated value
+			local function tick(): number
+				local now: number = __tick()
+				local dt: number = now - lastRealTick
+				fakeTickTime = fakeTickTime + dt * __config.time.dilation
+				lastRealTick = now
+				return fakeTickTime
+			end
+
+			--- Fake time returns the integer part of fake_tick
+
+			_env_write("tick", tick, __tick)
+			_env_write("time", function(): number
+				return math.floor(tick())
+			end, __time)
+
+			-- Override DateTime.now to use fake_tick as well
+			_env_write(
+				"DateTime",
+				_wrapper:wrap(DateTime, {
+					["now"] = function(): DateTime
+						return __DateTime.fromUnixTimestamp(tick())
+					end,
+				}),
+				__DateTime
+			)
+		end
+	end
 	--_env_write("workspace", _wrapper:wrap(workspace))
 	--_env_write("print", _wrapper:wrap(print))
 
@@ -658,13 +761,15 @@ do
 	end
 
 	__debug.resetmemorycategory() -- Reset thread developer console tag
-	__timestamp = os.clock() -- Reset timestam
+	__timestamp = __os_clock() -- Reset timestam
 end -- ⚠️ OLSSA Auditor Snippet End ⚠️
 --================----===OLSSAEND===----================--
 
-----local start = os.clock()
---for i=1,1e6 do game:GetService("Workspace") end
---print("Wrapped access time:", os.clock()-start) -- Target <0.1s
+local start = os.clock()
+for i = 1, 1e6 do
+	game:GetService("Workspace")
+end
+print("Wrapped access time:", os.clock() - start) -- Target <0.1s
 
 --print(rawget(getfenv(), "require"), require, rawget(getfenv(), "game"), game.CreatorId, workspace.Parent.CreatorId)
 --print(require(script.Parent["OLDolssa.rewrite copy"]))
