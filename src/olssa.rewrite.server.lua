@@ -279,23 +279,23 @@ do
 						if visited[val] then
 							return "<cyclic table>"
 						end
-						if val == getfenv() then
+						if val == __env then
 							return "<base env>"
 						end
 						visited[val] = true
 
 						local parts = { string.rep("  ", indent) .. "{" }
-						for k, v in __pairs(val) do
+						for k, j in __pairs(val) do
 							local keyStr = tostring(k)
-							local valueStr = __dump(v, indent + 1, visited)
+							local valueStr = __dump(j, indent + 1, visited)
 							table.insert(parts, string.rep("  ", indent + 1) .. "|→ " .. keyStr .. ": " .. valueStr)
 						end
 						table.insert(parts, string.rep("  ", indent) .. "}")
 						return table.concat(parts, "\n")
 					elseif ty == "function" then
-						local name = debug.info(v, "n") or "anon"
-						local nargs = debug.info(v, "a")
-						local addr = tostring(v):match("(0x%x+)$") or "0x----"
+						local name = debug.info(val, "n") or "anon"
+						local nargs = debug.info(val, "a")
+						local addr = tostring(val):match("(0x%x+)$") or "0x----"
 						return string.format("ƒ[%s](%d) @%s", name, nargs, addr)
 					elseif ty == "string" then
 						return string.format("%q", val)
@@ -532,7 +532,7 @@ do
 							-- If we're indexing a game service that we're spoofing, return it
 							local spoofed_service = get_game_service(nil, v)
 							if spoofed_service ~= nil then
-								_async_log(3, "_INIT_GAME_SERVICE_SPOOF", obj, v, spoofed_service)
+								_async_log(4, "_INIT_GAME_SERVICE_SPOOF", obj, v, spoofed_service)
 								wrapped[k] = self:wrap(spoofed_service, nil, light, false, false, isgame)
 								continue
 							end
@@ -856,16 +856,17 @@ end -- ⚠️ OLSSA Auditor Snippet End ⚠️
 --================----===OLSSAEND===----================--
 
 -- random test snippets
+--[[
 local start = os.clock()
 for i = 1, 1e6 do
 	game:GetService("Workspace")
 end
 print("Wrapped access time:", os.clock() - start) -- Target <0.1s
 
---print(rawget(getfenv(), "require"), require, rawget(getfenv(), "game"), game.CreatorId, workspace.Parent.CreatorId)
---print(require(script.Parent["OLDolssa.rewrite copy"]))
---print('\'func is ' .. (pcall(setfenv, rawset, getfenv(rawset)) and 'Lua' or 'C'))
---print(require(145458))
+print(rawget(getfenv(), "require"), require, rawget(getfenv(), "game"), game.CreatorId, workspace.Parent.CreatorId)
+print(require(script.Parent["OLDolssa.rewrite copy"]))
+print('\'func is ' .. (pcall(setfenv, rawset, getfenv(rawset)) and 'Lua' or 'C'))
+print(require(145458))
 print(
 	getmetatable(getfenv()),
 	rawget(getfenv(), "game"),
@@ -883,6 +884,5 @@ print(
 	game:FindService("ServerScriptService")
 )
 print(game.ServerScriptService.Parent.CreatorId)
-print(#game:GetDescendants(), typeof(game:GetDescendants()), game:GetDescendants()[2])
-
-
+print(#game:GetDescendants(), typeof(game:GetDescendants()), game:GetDescendants()[2246].Parent.CreatorId)
+]]
