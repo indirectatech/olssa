@@ -49,7 +49,7 @@ do
 
 		["logs"] = {
 			-- 0: Mute < 1: Script Activity & Requests < 2: Spoof Actions < 3: Wrapped Object Metamethods < 4: Detailed table, function dumps
-			["verbose"] = 0,
+			["verbose"] = 2,
 			["whitelist"] = nil, -- Only output logs that match the whitelist Lua Pattern
 			["blacklist"] = nil, -- Only output logs that don't match the blacklist Lua Pattern
 			["prelogs"] = false, -- Show logs that come from OLSSA startup
@@ -71,10 +71,11 @@ do
 		["wrapper"] = {
 			["globals"] = { "script", "workspace", "type", "typeof", "Instance", "tostring" }, -- Globals to wrap, replace or extend, apart from spoofed ones
 			["blacklist"] = {
-				["enabled"] = false,
-				["values"] = {}, -- If something with these values is being indexed, return the unwrapped version
+				["enabled"] = true,
+				["values"] = { pairs, ipairs, next }, -- If something with these values is being indexed, return the unwrapped version
 				["keys"] = {}, -- If one of these keys is being indexed, return the unwrapped version
 			},
+			["notablemeta"] = true, -- Create a new table with wrapped values instead of one with a custom metatable
 		},
 
 		["require"] = {
@@ -176,6 +177,10 @@ do
 	local __task_spawn = task.spawn
 	local __DateTime = DateTime
 
+	local __next = next
+	local __pairs = pairs
+	local __ipairs = ipairs
+
 	if __config.environment.custom.env ~= nil then
 		__env = __config.environment.custom.env
 	end
@@ -228,10 +233,9 @@ do
 	__debug.setmemorycategory(string.format("%s - OLSSA %s %s", __script.Name, __config.meta.revision, __identifier))
 
 	-- § Logging
-	-- § Logging
-	local RunService = game:GetService("RunService")
-	local logQueue = {}
-	local queueConnection = nil
+	local __runservice = game:GetService("RunService")
+	local __queue = {}
+	local __queueconn = nil
 
 	-- Processing function moved outside for reuse
 	local function processStackTrace(trace)
@@ -252,8 +256,7 @@ do
 			end
 
 			local name = fullname and fullname:gsub(__script:GetFullName(), "(script)") or "(main)"
-			local entry = func and string.format("%s.%s:%s", name, func, number)
-				or string.format("%s:%s", name, number)
+			local entry = func and string.format("%s.%s:%s", name, func, number) or string.format("%s:%s", name, number)
 
 			table.insert(stack, entry)
 		end
@@ -264,7 +267,7 @@ do
 	local function processJob(job)
 		-- Process arguments with dumping
 		local dump = {}
-		for i, v in ipairs(job.args) do
+		for i, v in __ipairs(job.args) do
 			if __config.logs.verbose >= 4 then
 				local function __dump(val, indent, visited)
 					-- Original dump implementation
@@ -273,18 +276,19 @@ do
 					local ty = type(val)
 
 					if ty == "table" then
-						if visited[val] then return "<cyclic table>" end
-						if val == getfenv() then return "<base env>" end
+						if visited[val] then
+							return "<cyclic table>"
+						end
+						if val == getfenv() then
+							return "<base env>"
+						end
 						visited[val] = true
 
 						local parts = { string.rep("  ", indent) .. "{" }
-						for k, v in pairs(val) do
+						for k, v in __pairs(val) do
 							local keyStr = tostring(k)
 							local valueStr = __dump(v, indent + 1, visited)
-							table.insert(
-								parts,
-								string.rep("  ", indent + 1) .. "|→ " .. keyStr .. ": " .. valueStr
-							)
+							table.insert(parts, string.rep("  ", indent + 1) .. "|→ " .. keyStr .. ": " .. valueStr)
 						end
 						table.insert(parts, string.rep("  ", indent) .. "}")
 						return table.concat(parts, "\n")
@@ -323,48 +327,48 @@ do
 
 	local function onHeartbeat()
 		local start = os.clock()
-		while #logQueue > 0 and (os.clock() - start) < 0.016 do -- 16ms budget
-			processJob(table.remove(logQueue, 1))
+		while #__queue > 0 and (os.clock() - start) < 0.016 do -- 16ms budget
+			processJob(table.remove(__queue, 1))
 		end
-		if #logQueue == 0 and queueConnection then
-			queueConnection:Disconnect()
-			queueConnection = nil
+		if #__queue == 0 and __queueconn then
+			__queueconn:Disconnect()
+			__queueconn = nil
 		end
 	end
 
 	local function enqueueJob(job)
-		table.insert(logQueue, job)
-		if not queueConnection then
-			queueConnection = RunService.Heartbeat:Connect(onHeartbeat)
+		table.insert(__queue, job)
+		if not __queueconn then
+			__queueconn = __runservice.Heartbeat:Connect(onHeartbeat)
 		end
 	end
 
 	local _log = __config.logs.verbose > 0
-		and function(level: number, ...: any)
-			if level > __config.logs.verbose then return end
-			if math.sign(__timestamp) ~= 1 and not __config.logs.prelogs then return end
+			and function(level: number, ...: any)
+				if level > __config.logs.verbose then
+					return
+				end
+				if math.sign(__timestamp) ~= 1 and not __config.logs.prelogs then
+					return
+				end
 
-			-- Capture time-sensitive data first
-			local timestamp = math.sign(__timestamp) * math.round((os.clock() - math.abs(__timestamp)) * 1000)
-			local header = ("[OLSSA] %s (l%d %dms)"):format(
-				__script:GetFullName(),
-				level,
-				timestamp
-			)
-			local trace = processStackTrace(debug.traceback())
+				-- Capture time-sensitive data first
+				local timestamp = math.sign(__timestamp) * math.round((os.clock() - math.abs(__timestamp)) * 1000)
+				local header = ("[OLSSA] %s (l%d %dms)"):format(__script:GetFullName(), level, timestamp)
+				local trace = processStackTrace(debug.traceback())
 
-			enqueueJob({
-				level = level,
-				header = header,
-				args = { ... },
-				stacktrace = trace,
-				timestamp = timestamp
-			})
-		end
+				enqueueJob({
+					level = level,
+					header = header,
+					args = { ... },
+					stacktrace = trace,
+					timestamp = timestamp,
+				})
+			end
 		or function() end
 
 	local function _async_log(...)
-		return _log(...)--task.spawn(_log, ...)
+		return _log(...) --task.spawn(_log, ...)
 	end
 
 	-- § Wrapper
@@ -384,11 +388,11 @@ do
 		}
 
 		-- Convert array blacklists to hash tables once during init
-		for _, k in ipairs(__config.wrapper.blacklist.keys) do
+		for _, k in __ipairs(__config.wrapper.blacklist.keys) do
 			__blacklist.keys[k] = true
 		end
 
-		for _, v in ipairs(__config.wrapper.blacklist.values) do
+		for _, v in __ipairs(__config.wrapper.blacklist.values) do
 			__blacklist.values[v] = true
 		end
 
@@ -503,76 +507,86 @@ do
 			-- Table proxy with access monitoring
 			elseif obj_type == "table" then
 				local wrapped = {}
-				__cache.wrapped[obj] = wrapped
-				__cache.original[wrapped] = obj
 
-				_setmetatable(wrapped, {
-					__index = function(_, k: any): any
-						local raw_value = obj[k]
+				local prefix = if isenv then "ENV" else "TABLE"
+				if __config.wrapper.notablemeta and not isenv then
+					_async_log(3, prefix .. "_INIT", obj, #obj, isgame and "from game env")
+					for k, v in __next, obj do
+						wrapped[k] = self:wrap(v, nil, light, nil, nil, isgame)
+					end
+					-- Possibly add a setmetatable if obj metatable ~= nil or replicate behavior like tostring, unary, etc.
+					-- This is unnecessary for tables returned by game function anyways
+				else
+					_setmetatable(wrapped, {
+						__index = function(_, k: any): any
+							local raw_value = obj[k]
 
-						local prefix = if isenv then "ENV" else "TABLE"
-						_async_log(3, prefix .. "_GET", obj, k, raw_value)
+							_async_log(3, prefix .. "_GET", obj, k, raw_value)
 
-						if __config.wrapper.blacklist.enabled then
-							if (__blacklist.keys[k] ~= nil) or (__blacklist.values[raw_value] ~= nil) then
-								_async_log(3, prefix .. "_RAW_VALUE", obj, k, raw_value)
+							if __config.wrapper.blacklist.enabled then
+								if (__blacklist.keys[k] ~= nil) or (__blacklist.values[raw_value] ~= nil) then
+									_async_log(3, prefix .. "_RAW_VALUE", obj, k, raw_value)
+									return raw_value
+								end
+							end
+
+							-- If we're indexing a global that we're spoofing, return it
+							local spoofed_value = cnt and cnt[k]
+							if spoofed_value ~= nil then
+								_async_log(3, prefix .. "_VALUE_SPOOF", obj, k, spoofed_value)
+								return self:wrap(spoofed_value)
+							end
+
+							-- Table comes from game (i.e. getchildren)
+							if isgame then
+								-- If we're indexing a game service that we're spoofing, return it
+								local spoofed_service = get_game_service(k, raw_value)
+								if spoofed_service ~= nil then
+									_async_log(3, "GAME_SERVICE_SPOOF", obj, k, spoofed_service)
+									return self:wrap(spoofed_service, nil, light, false, false, isgame)
+								end
+							end
+
+							-- If we're indexing a global (or index points to original global) that we're spoofing, return the spoofed version
+							local spoofed_global = if usekeys
+								then __globals.custom[k]
+								else __globals.custom[self:unwrap(raw_value)]
+							if spoofed_global ~= nil then
+								_async_log(isenv and 4 or 3, prefix .. "_GLOBAL_SPOOF", obj, k, spoofed_global)
+								return self:wrap(spoofed_global)
+							end
+
+							if light then
 								return raw_value
 							end
-						end
 
-						-- If we're indexing a global that we're spoofing, return it
-						local spoofed_value = cnt and cnt[k]
-						if spoofed_value ~= nil then
-							_async_log(3, prefix .. "_VALUE_SPOOF", obj, k, spoofed_value)
-							return self:wrap(spoofed_value)
-						end
+							return self:wrap(raw_value)
+						end,
 
-						-- Table comes from game (i.e. getchildren)
-						if isgame then
-							-- If we're indexing a game service that we're spoofing, return it
-							local spoofed_service = get_game_service(k, raw_value)
-							if spoofed_service ~= nil then
-								_async_log(3, "GAME_SERVICE_SPOOF", obj, k, spoofed_service)
-								return self:wrap(spoofed_service, nil, light, false, false, isgame)
+						__newindex = function(_, k: any, v: any)
+							_async_log(3, prefix .. "_SET", obj, k)
+							obj[k] = self:unwrap(v)
+						end,
+
+						__iter = function()
+							local next_fn, state, init = __pairs(obj)
+							return function()
+								local k, v = next_fn(state, init)
+								init = k
+								return self:wrap(k), self:wrap(v)
 							end
-						end
+						end,
 
-						-- If we're indexing a global (or index points to original global) that we're spoofing, return the spoofed version
-						local spoofed_global = if usekeys
-							then __globals.custom[k]
-							else __globals.custom[self:unwrap(raw_value)]
-						if spoofed_global ~= nil then
-							_async_log(isenv and 4 or 3, prefix .. "_GLOBAL_SPOOF", obj, k, spoofed_global)
-							return self:wrap(spoofed_global)
-						end
+						__tostring = function()
+							return tostring(obj)
+						end,
 
-						if light then
-							return raw_value
-						end
+						__metatable = _getmetatable(obj),
+					})
+				end
 
-						return self:wrap(raw_value)
-					end,
-
-					__newindex = function(_, k: any, v: any)
-						_async_log(3, prefix .. "_SET", obj, k)
-						obj[k] = self:unwrap(v)
-					end,
-
-					__iter = function()
-						local next_fn, state, init = pairs(obj)
-						return function()
-							local k, v = next_fn(state, init)
-							init = k
-							return self:wrap(k), self:wrap(v)
-						end
-					end,
-
-					__tostring = function()
-						return tostring(obj)
-					end,
-
-					__metatable = _getmetatable(obj),
-				})
+				__cache.wrapped[obj] = wrapped
+				__cache.original[wrapped] = obj
 				return wrapped
 
 			-- Function wrapper with call monitoring
@@ -605,7 +619,7 @@ do
 					end
 
 					for i = 1, #results do
-						results[i] = self:wrap(results[i])
+						results[i] = self:wrap(results[i], nil, light, nil, nil, isgame)
 					end
 					return _unpack(results)
 				end
@@ -791,8 +805,6 @@ do
 			)
 		end
 	end
-	--_env_write("workspace", _wrapper:wrap(workspace))
-	--_env_write("print", _wrapper:wrap(print))
 
 	-- § Wrap environment
 	if __config.environment.wrap then
@@ -804,11 +816,12 @@ do
 end -- ⚠️ OLSSA Auditor Snippet End ⚠️
 --================----===OLSSAEND===----================--
 
+-- random test snippets
 local start = os.clock()
 --for i = 1, 1e6 do
 --	game:GetService("Workspace")
 --end
-print("Wrapped access time:", os.clock() - start) -- Target <0.1s
+--print("Wrapped access time:", os.clock() - start) -- Target <0.1s
 
 --print(rawget(getfenv(), "require"), require, rawget(getfenv(), "game"), game.CreatorId, workspace.Parent.CreatorId)
 --print(require(script.Parent["OLDolssa.rewrite copy"]))
@@ -831,3 +844,4 @@ print(
 	game:FindService("ServerScriptService")
 )
 print(game.ServerScriptService.Parent.CreatorId)
+print(#game:GetDescendants(), typeof(game:GetDescendants()), game:GetDescendants()[2])
