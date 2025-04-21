@@ -123,7 +123,8 @@ do
 		},
 		["runservice"] = {
 			["spoof"] = true, -- Spoofs game's RunService with a custom version, 'game' hook must be enabled
-			["isstudio"] = true, -- Spoofs IsStudio with the desired value, use nil to keep the original value
+			["isstudio"] = false, -- Spoofs IsStudio with the desired value, use nil to keep the original value
+			["dilatestepped"] = true, -- If time dilation hook is enabled, hook all RunService heartbeat stepped events to return dilated dt
 		},
 		["marketplaceservice"] = {
 			["spoof"] = true, -- Spoofs game's MarketplaceService with a custom version, 'game' hook must be enabled
@@ -233,7 +234,7 @@ do
 	__debug.setmemorycategory(string.format("%s - OLSSA %s %s", __script.Name, __config.meta.revision, __identifier))
 
 	-- § Logging
-	local __runservice = game:GetService("RunService")
+	local __runservice = __game:GetService("RunService")
 	local __queue = {}
 	local __queueconn = nil
 
@@ -532,7 +533,7 @@ do
 							-- If we're indexing a game service that we're spoofing, return it
 							local spoofed_service = get_game_service(nil, v)
 							if spoofed_service ~= nil then
-								_async_log(4, "_INIT_GAME_SERVICE_SPOOF", obj, v, spoofed_service)
+								_async_log(4, prefix.."_INIT_GAME_SERVICE_SPOOF", obj, v, spoofed_service)
 								wrapped[k] = self:wrap(spoofed_service, nil, light, false, false, isgame)
 								continue
 							end
@@ -845,6 +846,18 @@ do
 		end
 	end
 
+	-- § 'RunService' Spoof
+	if __config.runservice.spoof then
+		--local __runservice = __game:GetService("RunService")
+		__gameservices["RunService"] = _wrapper:wrap(__runservice, {
+			["IsStudio"] = function(self)
+				_log(1, "ISSTUDIO_CHECK", __runservice:IsStudio(), __config.runservice.isstudio)
+				return if __config.runservice.isstudio ~= nil then __config.runservice.isstudio else __runservice:IsStudio()
+			end,
+		})
+	end
+
+
 	-- § Wrap environment
 	if __config.environment.wrap then
 		_setfenv(1, _wrapper:wrap(__env, nil, __config.environment.light, __config.environment.usekeys))
@@ -854,6 +867,7 @@ do
 	__timestamp = __os_clock() -- Reset timestam
 end -- ⚠️ OLSSA Auditor Snippet End ⚠️
 --================----===OLSSAEND===----================--
+print(game:GetService("RunService"):IsStudio())
 
 -- random test snippets
 --[[
